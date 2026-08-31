@@ -1,0 +1,2 @@
+document.querySelectorAll('.count').forEach(el=>{const end=Number(el.dataset.value||0);let n=0;const step=Math.max(1,Math.ceil(end/25));const t=setInterval(()=>{n=Math.min(end,n+step);el.textContent=n;if(n>=end)clearInterval(t)},35)});
+const cost=window.BAGC_COST;if(cost&&window.Chart){new Chart(document.getElementById('costChart'),{type:'doughnut',data:{labels:Object.keys(cost),datasets:[{data:Object.values(cost)}]},options:{plugins:{legend:{labels:{color:'#dceaf0'}}},animation:{animateRotate:true,duration:1400}}})}
