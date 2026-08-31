@@ -34,3 +34,23 @@ The authenticated dashboard is rendered directly at `/` after sign-in, while `/d
 
 ## V11 login fix
 Login now authenticates the user and redirects to the canonical `/dashboard` route. The Super Admin is synchronized from `ADMIN_USERNAME` and `ADMIN_PASSWORD` before authentication, including on an existing SQLite database.
+
+## V14 additions
+- Project contract baseline: signed date, commencement, end date, contract days, contract value
+- Planned vs actual income and physical progress
+- Ahead/behind schedule and time discrepancy dashboard
+- Project and company expense percentage charts
+- Daily machinery/material/fuel lists on dashboard
+- Fuel and gauge reporting with cost and consumption
+- Site crew hierarchy and grouped positions
+- Expanded construction material catalogue
+- Print-friendly reporting foundation
+
+
+## V14.1 additions
+- Editable project contract baseline
+- Planned vs actual income controls
+- Physical vs schedule variance and ahead/behind indicators
+- Expanded construction material categories/catalogue
+- Fuel register and printable controls
+- Site crew hierarchy groups and position catalogue

@@ -14,9 +14,30 @@ app.secret_key=os.environ.get("SECRET_KEY","bagc-change-this-secret")
 
 DEPARTMENTS=["Administration","Design","Machinery","Finance","HR","Store","Project"]
 MACHINE_TYPES=["Dozer","Excavator","Wheel Loader","Backhoe Loader","Motor Grader","Roller","Dump Truck","Water Truck","Crane","Forklift","Concrete Mixer","Concrete Pump","Batching Plant","Crusher","Asphalt Plant","Asphalt Paver","Bitumen Distributor","Road Sweeper","Generator","Welding Machine","Vibrator","Air Compressor","Pickup","Other"]
-MATERIAL_CATEGORIES=["Common Construction","Concrete","Rebar","Formwork","Masonry","Finishing","Sanitary","Plumbing","Electrical","Aluminium","Glass","Road Works","Fuel & Oil","Spare Parts","Stationery & Cleaning","PPE","Other"]
-MATERIAL_CATALOG=["Cement","Sand","Fine Aggregate","Coarse Aggregate 10mm","Coarse Aggregate 20mm","Coarse Aggregate 40mm","Water","Rebar Ø8","Rebar Ø10","Rebar Ø12","Rebar Ø16","Rebar Ø20","Binding Wire","Black Wire Roll","Nails 2in","Nails 3in","Nails 4in","Plywood 4x8","Eucalyptus Pole","Timber","Form Oil","Stone","Natural Stone Cladding","Aluminium Frame","Aluminium Sheet","Glass","PVC Pipe 110mm","PVC Pipe 160mm","HDPE Pipe","Electrical Cable","Conduit","Switch","Socket","Sanitary Fixture","Tile","Paint","Fuel Diesel","Engine Oil","Hydraulic Oil","Grease","Bitumen","Welding Rod","Other"]
+MATERIAL_CATEGORIES=["Common Construction","Earthworks","Concrete","Rebar","Structural Steel / RHS","Formwork","Masonry","Roofing","Waterproofing","Finishing","Tiles","Natural Stone","Sanitary","Plumbing","Drainage","Electrical","Low Voltage / ICT","Aluminium","Glass","Road Works","Culverts","Landscaping","Fuel & Oil","Lubricants","Spare Parts","Welding / Cutting","PPE / Safety","Stationery & Cleaning","Tools","Other"]
+MATERIAL_CATALOG=[
+"Cement OPC","Cement PPC","Cement Rapid Hardening","Sand Fine","Sand Coarse","Quarry Dust","Selected Fill","Subbase","Base Course",
+"Aggregate 5mm","Aggregate 10mm","Aggregate 14mm","Aggregate 20mm","Aggregate 25mm","Aggregate 40mm","Aggregate 50mm","Water",
+"Rebar Ø6","Rebar Ø8","Rebar Ø10","Rebar Ø12","Rebar Ø14","Rebar Ø16","Rebar Ø20","Rebar Ø25","Rebar Ø32","Binding Wire 0.9mm","Binding Wire 1.2mm","Black Wire Roll",
+"Welded Wire Mesh","Tie Wire","Anchor Bolt","Steel Plate","Angle Bar","Flat Bar","Round Bar","Channel","I-Beam","H-Beam","RHS 40x40","RHS 50x50","RHS 60x60","RHS 80x80","RHS 100x50","RHS 100x100","SHS","GI Sheet","Corrugated Sheet","Roofing Screw","Self Tapping Screw",
+"Plywood 4x8","Plywood 12mm","Plywood 15mm","Plywood 18mm","Marine Plywood","Eucalyptus Pole","Eucalyptus Plank","Timber 2x4","Timber 2x6","Timber 2x8","Timber 4x4","Scaffold Tube","Scaffold Coupler","Form Tie","Form Oil","Release Agent","Nails 1in","Nails 2in","Nails 3in","Nails 4in","Nails 5in","Nails 6in",
+"Concrete Block","Hollow Concrete Block 10cm","Hollow Concrete Block 15cm","Hollow Concrete Block 20cm","Solid Block","Brick","Kerbstone","Interlock Paver","Concrete Pipe","U-Ditch","Manhole Cover",
+"PVC Pipe 25mm","PVC Pipe 32mm","PVC Pipe 50mm","PVC Pipe 75mm","PVC Pipe 110mm","PVC Pipe 160mm","PVC Pipe 200mm","PVC Pipe 250mm","HDPE Pipe","PPR Pipe","UPVC Fitting","Elbow","Tee","Reducer","Valve","Manhole Ring","Geotextile","Waterproofing Membrane",
+"Electrical Cable 1.5mm2","Electrical Cable 2.5mm2","Electrical Cable 4mm2","Electrical Cable 6mm2","Electrical Cable 10mm2","Electrical Cable 16mm2","Armoured Cable","Control Cable","Conduit PVC","Flexible Conduit","Junction Box","Distribution Board","MCB","MCCB","RCD","Isolator","Switch","Socket","Industrial Socket","Light Fixture","LED Light","Street Light","Earthing Rod","Earthing Cable","Cable Lug","Cable Tray","Cable Tie","Electrical Tape",
+"Aluminium Frame","Aluminium Sheet","Aluminium Composite Panel","Glass 5mm","Glass 6mm","Tempered Glass","Laminated Glass","Silicone","Rubber Gasket","Door Handle","Lockset","Hinge","Door Closer",
+"Ceramic Tile","Porcelain Tile","Granite Tile","Marble","Natural Stone Cladding","Stone Veneer","Terrazzo","Skirting Tile","Tile Adhesive","Grout","Cement Mortar","Waterproofing Additive","Paint Primer","Emulsion Paint","Enamel Paint","Exterior Paint","Thinner","Putty","Gypsum Board","Gypsum Powder","Ceiling Tile","Acoustic Panel","Insulation","Bituminous Paint",
+"Sanitary WC","Wash Basin","Urinal","Shower Mixer","Tap","Bib Tap","Floor Drain","Bottle Trap","P-Trap","S-Trap","Flush Valve","Flush Tank","Flexible Hose","Mirror","Soap Holder","Towel Rail","Sanitary Silicone",
+"Diesel","Petrol","Engine Oil","Hydraulic Oil","Gear Oil","Brake Fluid","Coolant","Grease","AdBlue","Bitumen 60/70","Emulsion","Prime Coat","Tack Coat","Welding Rod 2.5mm","Welding Rod 3.2mm","Welding Rod 4mm","Oxygen","Acetylene","Grinding Disc","Cutting Disc","Drill Bit","Saw Blade",
+"Safety Helmet","Safety Vest","Safety Boot","Safety Glove","Safety Goggles","Ear Plug","Dust Mask","Harness","Reflective Tape","Barricade","Warning Sign","Cones","Fire Extinguisher","First Aid Kit",
+"Other"]
+CREW_GROUPS=["Project Management","Key Staff","Earthwork Crew","Structure Crew","Road/Culvert Crew","Equipment / Machinery","Store","DL","Data Collector","Survey Team","Supporting Staff","Office Staff","Skilled Labour","Semi-Skilled Labour","Non-Skilled Labour","Security / General Support"]
+POSITION_CATALOG=["Project Manager","Deputy Project Manager","Construction Manager","Site Engineer","Office Engineer","Quantity Surveyor","Planning Engineer","Design Engineer","QA/QC Engineer","Materials Engineer","Surveyor","Survey Assistant","HSE Officer","Foreman","Earthwork Foreman","Structure Foreman","Road Foreman","DL","Data Collector","Store Keeper","Store Assistant","Mechanic","Electrician","Plumber","Mason","Carpenter","Steel Fixer","Welder","Painter","Aluminium Worker","Equipment Operator","Driver","Labourer","Security Guard","Cleaner","Office Assistant","Document Controller","Accountant","Procurement Officer","Other"]
 DESIGN_STATUSES=["Draft","Submitted","Under Review","Approved","Approved with Comments","Revise & Resubmit","Rejected","As-Built","Handed Over"]
+
+
+@app.context_processor
+def template_helpers():
+    return {"dt": dt}
 
 
 def db():
@@ -46,7 +67,10 @@ def init_db():
     CREATE TABLE IF NOT EXISTS daily_activities(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,boq_id INTEGER,work_type TEXT,executed_qty REAL DEFAULT 0,machine_id INTEGER,machine_hours REAL DEFAULT 0,manpower_position TEXT,manpower_qty REAL DEFAULT 0,manpower_hours REAL DEFAULT 0,material_id INTEGER,material_qty REAL DEFAULT 0,remarks TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS problems(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,problem TEXT,remark TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS fuel_logs(id INTEGER PRIMARY KEY,project_id INTEGER,machine_id INTEGER,date TEXT,opening_gauge REAL DEFAULT 0,fuel_received REAL DEFAULT 0,closing_gauge REAL DEFAULT 0,fuel_price REAL DEFAULT 0,reference TEXT,notes TEXT,user_id INTEGER);
+    CREATE TABLE IF NOT EXISTS project_crews(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,group_name TEXT,position TEXT,name TEXT,employment TEXT,skill_level TEXT,working_hours REAL DEFAULT 0,hourly_rate REAL DEFAULT 0,notes TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS report_settings(id INTEGER PRIMARY KEY,project_id INTEGER UNIQUE,contractor_role TEXT DEFAULT 'Main Contractor',phone TEXT,email TEXT,website TEXT,fax TEXT,address TEXT,logo_text TEXT);
+    CREATE TABLE IF NOT EXISTS rfis(id INTEGER PRIMARY KEY,project_id INTEGER,rfi_no TEXT,date_requested TEXT,inspection_date TEXT,location TEXT,boq_id INTEGER,work_description TEXT,drawing_no TEXT,drawing_revision TEXT,specification TEXT,work_stage TEXT,submitted_by INTEGER,status TEXT DEFAULT 'PENDING INSPECTION',overall_comment TEXT,corrective_action TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS rfi_inspections(id INTEGER PRIMARY KEY,rfi_id INTEGER,inspector_user_id INTEGER,inspector_role TEXT,decision TEXT DEFAULT 'PENDING',comments TEXT,inspection_date TEXT,signed_at TEXT,UNIQUE(rfi_id,inspector_user_id));
     ''')
     # Safe migrations for databases created by earlier BAGC versions.
     existing=[r['name'] for r in c.execute("PRAGMA table_info(machines)").fetchall()]
@@ -56,7 +80,7 @@ def init_db():
     for col,typ in [('working_hours','REAL DEFAULT 8'),('hourly_rate','REAL DEFAULT 0')]:
         if col not in existing_mp: c.execute(f"ALTER TABLE manpower ADD COLUMN {col} {typ}")
     existing_p=[r['name'] for r in c.execute("PRAGMA table_info(projects)").fetchall()]
-    for col,typ in [('contractor_role',"TEXT DEFAULT 'Main Contractor'")]:
+    for col,typ in [('contractor_role',"TEXT DEFAULT 'Main Contractor'"),('contract_sign_date','TEXT'),('commencement_date','TEXT'),('contract_end_date','TEXT'),('contract_days','INTEGER DEFAULT 0'),('planned_income','REAL DEFAULT 0'),('planned_physical_pct','REAL DEFAULT 0'),('contract_value','REAL DEFAULT 0')]:
         if col not in existing_p: c.execute(f"ALTER TABLE projects ADD COLUMN {col} {typ}")
     # ENV-controlled Super Admin synchronization fixes an already-created SQLite DB.
     u=os.environ.get("ADMIN_USERNAME","admin").strip() or "admin"
@@ -77,7 +101,7 @@ def current_user():
 
 @app.context_processor
 def inject():
-    return {"me":current_user(),"machine_types":MACHINE_TYPES,"material_categories":MATERIAL_CATEGORIES,"material_catalog":MATERIAL_CATALOG,"design_statuses":DESIGN_STATUSES,"today":dt.date.today().isoformat()}
+    return {"me":current_user(),"machine_types":MACHINE_TYPES,"material_categories":MATERIAL_CATEGORIES,"material_catalog":MATERIAL_CATALOG,"design_statuses":DESIGN_STATUSES,"today":dt.date.today().isoformat(),"crew_groups":CREW_GROUPS,"position_catalog":POSITION_CATALOG}
 
 
 def login_required(f):
@@ -144,7 +168,13 @@ def dashboard_data(pid=None):
         total_exp=money(me+pe+se+other)
         daily_m=c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,(ml.work_hours*m.hourly_rate) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? ORDER BY ml.date DESC,ml.id DESC LIMIT 8",(p["id"],)).fetchall()
         daily_mat=c.execute("SELECT sl.*,m.name,m.category,m.unit FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? ORDER BY sl.date DESC,sl.id DESC LIMIT 8",(p["id"],)).fetchall()
-        out.append({"p":p,"income":money(inc),"expense":total_exp,"expense_pct":money((total_exp/(inc+0.0001))*100) if inc else 0,"machine_expense":money(me),"manpower_expense":money(pe),"store_expense":money(se),"other_expense":money(other),"workers":workers,"machines":machines,"daily_machines":daily_m,"daily_materials":daily_mat})
+        fuel_recent=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,(f.opening_gauge+f.fuel_received-f.closing_gauge) consumption,(f.fuel_received*f.fuel_price) cost FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? ORDER BY f.date DESC,f.id DESC LIMIT 8",(p["id"],)).fetchall()
+        contract_value=p["contract_value"] or c.execute("SELECT COALESCE(SUM(contract_qty*rate),0) FROM boq WHERE project_id=?",(p["id"],)).fetchone()[0]
+        physical_pct=(inc/contract_value*100) if contract_value else 0
+        start=p["commencement_date"] or p["start_date"]; end=p["contract_end_date"] or p["end_date"]; schedule_pct=0; time_var=0; days_remaining=None
+        if start and end:
+            sd=dt.date.fromisoformat(start); ed=dt.date.fromisoformat(end); total=max((ed-sd).days,0); elapsed=max(min((dt.date.today()-sd).days,total),0); schedule_pct=(elapsed/total*100) if total else 0; time_var=physical_pct-schedule_pct; days_remaining=(ed-dt.date.today()).days
+        out.append({"p":p,"income":money(inc),"expense":total_exp,"expense_pct":money((total_exp/(inc+0.0001))*100) if inc else 0,"machine_expense":money(me),"manpower_expense":money(pe),"store_expense":money(se),"other_expense":money(other),"workers":workers,"machines":machines,"daily_machines":daily_m,"daily_materials":daily_mat,"fuel_recent":fuel_recent,"contract_value":money(contract_value),"physical_pct":money(physical_pct),"schedule_pct":money(schedule_pct),"time_variance_pct":money(time_var),"days_remaining":days_remaining,"planned_income":money(p["planned_income"] or 0)})
     company_exp=sum(x["expense"] for x in out) or 1
     out=[dict(x,company_expense_pct=money((x["expense"]/company_exp)*100)) for x in out]
     c.close();return out
@@ -203,9 +233,27 @@ def home_alias():
 @app.route("/projects/<int:pid>")
 @login_required
 def project(pid):
-    if not allowed_project(pid):flash("🚫 You do not have access to this project.","error");return redirect(url_for("dashboard"))
-    c=db();p=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone();boq_count=c.execute("SELECT COUNT(*) n FROM boq WHERE project_id=?",(pid,)).fetchone()["n"];machine_count=c.execute("SELECT COUNT(*) n FROM machines WHERE project_id=? AND active=1",(pid,)).fetchone()["n"];mat_count=c.execute("SELECT COUNT(*) n FROM materials WHERE project_id=? AND active=1",(pid,)).fetchone()["n"];c.close()
-    return render_template("project.html",p=p,boq_count=boq_count,machine_count=machine_count,mat_count=mat_count)
+    if not allowed_project(pid): flash("🚫 You do not have access to this project.","error"); return redirect(url_for("dashboard"))
+    c=db(); p=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone()
+    if not p: c.close(); return redirect(url_for("dashboard"))
+    boq_count=c.execute("SELECT COUNT(*) n FROM boq WHERE project_id=?",(pid,)).fetchone()["n"]
+    machine_count=c.execute("SELECT COUNT(*) n FROM machines WHERE project_id=? AND active=1",(pid,)).fetchone()["n"]
+    mat_count=c.execute("SELECT COUNT(*) n FROM materials WHERE project_id=? AND active=1",(pid,)).fetchone()["n"]
+    actual_income=c.execute("SELECT COALESCE(SUM(dw.quantity*b.rate),0) x FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=?",(pid,)).fetchone()["x"]
+    actual_expense=c.execute("SELECT COALESCE(SUM(ml.work_hours*m.hourly_rate),0) FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=?",(pid,)).fetchone()[0]
+    actual_expense+=c.execute("SELECT COALESCE(SUM(CASE WHEN mp.hourly_rate>0 THEN mp.present*mp.working_hours*mp.hourly_rate ELSE mp.present*mp.daily_rate END+mp.overtime_hours*mp.overtime_rate),0) FROM manpower mp WHERE mp.project_id=?",(pid,)).fetchone()[0]
+    actual_expense+=c.execute("SELECT COALESCE(SUM(issued*unit_cost),0) FROM store_logs WHERE project_id=?",(pid,)).fetchone()[0]
+    actual_expense+=c.execute("SELECT COALESCE(SUM(amount),0) FROM finance_logs WHERE project_id=? AND kind='Expense'",(pid,)).fetchone()[0]
+    contract_value=p["contract_value"] or c.execute("SELECT COALESCE(SUM(contract_qty*rate),0) FROM boq WHERE project_id=?",(pid,)).fetchone()[0]
+    physical_pct=(actual_income/contract_value*100) if contract_value else 0
+    today=dt.date.today(); start=p["commencement_date"] or p["start_date"]; end=p["contract_end_date"] or p["end_date"]
+    elapsed=0; schedule_pct=0; time_variance_pct=0; days_remaining=None
+    if start and end:
+        sd=dt.date.fromisoformat(start); ed=dt.date.fromisoformat(end); total=max((ed-sd).days,0); elapsed=max(min((today-sd).days,total),0); schedule_pct=(elapsed/total*100) if total else 0; time_variance_pct=physical_pct-schedule_pct; days_remaining=(ed-today).days
+    planned_income=p["planned_income"] or 0; income_variance=actual_income-planned_income
+    crew_count=c.execute("SELECT COUNT(*) n FROM project_crews WHERE project_id=?",(pid,)).fetchone()["n"]
+    c.close()
+    return render_template("project.html",p=p,boq_count=boq_count,machine_count=machine_count,mat_count=mat_count,actual_income=actual_income,actual_expense=actual_expense,contract_value=contract_value,physical_pct=physical_pct,schedule_pct=schedule_pct,time_variance_pct=time_variance_pct,days_remaining=days_remaining,planned_income=planned_income,income_variance=income_variance,crew_count=crew_count)
 
 @app.route("/projects/<int:pid>/daily",methods=["GET","POST"])
 @login_required
@@ -253,7 +301,7 @@ def fuel(pid):
         c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?)",(pid,request.form["machine_id"],request.form["date"],parse_float(request.form["opening_gauge"]),parse_float(request.form["fuel_received"]),parse_float(request.form["closing_gauge"]),parse_float(request.form["fuel_price"]),request.form.get("reference",""),request.form.get("notes",""),current_user()["id"])); c.commit(); flash("⛽ Fuel log saved.","success")
     machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall()
     logs=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,(f.opening_gauge+f.fuel_received-f.closing_gauge) consumption,(f.fuel_received*f.fuel_price) cost,COALESCE((SELECT SUM(ml.work_hours) FROM machine_logs ml WHERE ml.machine_id=f.machine_id AND ml.date=f.date),0) work_hours,COALESCE((SELECT SUM(ml.work_hours) FROM machine_logs ml WHERE ml.machine_id=f.machine_id AND ml.date=f.date),0)*m.expected_fuel expected_consumption FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? ORDER BY f.date DESC,f.id DESC LIMIT 100",(pid,)).fetchall(); c.close()
-    return render_template("fuel.html",pid=pid,machines=machines,logs=logs)
+    total_l=c.execute("SELECT COALESCE(SUM(fuel_received),0) FROM fuel_logs WHERE project_id=?",(pid,)).fetchone()[0]; total_cost=c.execute("SELECT COALESCE(SUM(fuel_received*fuel_price),0) FROM fuel_logs WHERE project_id=?",(pid,)).fetchone()[0]; c.close(); return render_template("fuel.html",pid=pid,machines=machines,logs=logs,total_l=total_l,total_cost=total_cost)
 
 @app.route("/projects/<int:pid>/performance",methods=["GET","POST"])
 @login_required
@@ -317,6 +365,15 @@ def store(pid):
     mats=c.execute("SELECT m.*,COALESCE(SUM(sl.received),0) rec,COALESCE(SUM(sl.issued),0) iss,COALESCE(SUM(sl.received)-SUM(sl.issued),0) balance,(SELECT sl2.physical_balance FROM store_logs sl2 WHERE sl2.material_id=m.id AND sl2.physical_balance IS NOT NULL ORDER BY sl2.date DESC,sl2.id DESC LIMIT 1) physical FROM materials m LEFT JOIN store_logs sl ON sl.material_id=m.id WHERE m.project_id=? AND m.active=1 GROUP BY m.id ORDER BY m.category,m.name",(pid,)).fetchall();logs=c.execute("SELECT sl.*,m.name,m.unit FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? ORDER BY sl.date DESC,sl.id DESC LIMIT 100",(pid,)).fetchall();c.close();return render_template("store.html",pid=pid,materials=mats,logs=logs)
 
 
+@app.route("/projects/<int:pid>/crew",methods=["GET","POST"])
+@login_required
+def crew(pid):
+    if not allowed_project(pid) or not can_module("HR"): flash("🚫 Crew/HR access is not assigned.","error"); return redirect(url_for("project",pid=pid))
+    c=db()
+    if request.method=="POST":
+        c.execute("INSERT INTO project_crews(project_id,date,group_name,position,name,employment,skill_level,working_hours,hourly_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form.get("date",dt.date.today().isoformat()),request.form["group_name"],request.form["position"],request.form["name"],request.form["employment"],request.form.get("skill_level","Skilled"),parse_float(request.form.get("working_hours")),parse_float(request.form.get("hourly_rate")),request.form.get("notes",""),current_user()["id"])); c.commit(); flash("👷 Crew member registered.","success")
+    rows=c.execute("SELECT * FROM project_crews WHERE project_id=? ORDER BY group_name,position,name",(pid,)).fetchall(); c.close(); return render_template("crew.html",pid=pid,rows=rows)
+
 @app.route("/projects/<int:pid>/report-settings",methods=["GET","POST"])
 @admin_required
 def report_settings(pid):
@@ -360,6 +417,75 @@ def reports(pid):
     se=c.execute("SELECT COALESCE(SUM(issued*unit_cost),0) x FROM store_logs WHERE project_id=? AND date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()["x"]
     oe=c.execute("SELECT COALESCE(SUM(amount),0) x FROM finance_logs WHERE project_id=? AND kind='Expense' AND date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()["x"]
     c.close();return render_template("reports.html",pid=pid,rows=out,period=period,anchor=anchor,start=start,end=end,income=inc,expenses={"Machinery":me,"Manpower":pe,"Store":se,"Other":oe},total_expense=me+pe+se+oe)
+
+@app.route("/projects/<int:pid>/rfi", methods=["GET","POST"])
+@login_required
+def rfi(pid):
+    if not allowed_project(pid):
+        flash("🚫 You do not have access to this project.","error")
+        return redirect(url_for("dashboard"))
+    c=db()
+    project=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone()
+    boqs=c.execute("SELECT * FROM boq WHERE project_id=? ORDER BY item_no",(pid,)).fetchall()
+    users=c.execute("SELECT id,full_name,username,department,role FROM users WHERE active=1 ORDER BY full_name").fetchall()
+    if request.method=="POST":
+        f=request.form
+        inspectors=request.form.getlist("inspectors")
+        if not inspectors:
+            flash("👷 Select at least one inspector.","error")
+            c.close(); return render_template("rfi.html",p=project,boqs=boqs,users=users,rfis=[],selected_inspectors=[])
+        count=c.execute("SELECT COUNT(*) n FROM rfis WHERE project_id=?",(pid,)).fetchone()["n"]+1
+        rfi_no=f"RFI-{dt.date.today().year}-{count:03d}"
+        c.execute("INSERT INTO rfis(project_id,rfi_no,date_requested,inspection_date,location,boq_id,work_description,drawing_no,drawing_revision,specification,work_stage,submitted_by,status,overall_comment,corrective_action) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,rfi_no,f.get("date_requested") or dt.date.today().isoformat(),f.get("inspection_date") or None,f.get("location",""),f.get("boq_id") or None,f.get("work_description",""),f.get("drawing_no",""),f.get("drawing_revision",""),f.get("specification",""),f.get("work_stage",""),session["user_id"],"PENDING INSPECTION", "", ""))
+        rid=c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+        for uid in inspectors:
+            u=c.execute("SELECT id,department FROM users WHERE id=?",(uid,)).fetchone()
+            if u: c.execute("INSERT OR IGNORE INTO rfi_inspections(rfi_id,inspector_user_id,inspector_role) VALUES(?,?,?)",(rid,u["id"],u["department"] or "Inspector"))
+        c.commit(); c.close()
+        flash(f"📋 {rfi_no} submitted for inspection.","success")
+        return redirect(url_for("rfi",pid=pid))
+    rfis=c.execute("SELECT r.*,u.full_name AS submitter,(SELECT COUNT(*) FROM rfi_inspections ri WHERE ri.rfi_id=r.id) inspector_count,(SELECT COUNT(*) FROM rfi_inspections ri WHERE ri.rfi_id=r.id AND ri.decision='APPROVED') approved_count FROM rfis r LEFT JOIN users u ON u.id=r.submitted_by WHERE r.project_id=? ORDER BY r.id DESC",(pid,)).fetchall()
+    c.close()
+    return render_template("rfi.html",p=project,boqs=boqs,users=users,rfis=rfis,selected_inspectors=[])
+
+@app.route("/projects/<int:pid>/rfi/<int:rid>", methods=["GET","POST"])
+@login_required
+def rfi_detail(pid,rid):
+    if not allowed_project(pid): return redirect(url_for("dashboard"))
+    c=db(); r=c.execute("SELECT r.*,p.name project_name,p.client,p.consultant,u.full_name submitter FROM rfis r JOIN projects p ON p.id=r.project_id LEFT JOIN users u ON u.id=r.submitted_by WHERE r.id=? AND r.project_id=?",(rid,pid)).fetchone()
+    if not r: c.close(); return ("RFI not found",404)
+    if request.method=="POST":
+        iid=request.form.get("inspection_id")
+        decision=request.form.get("decision","PENDING")
+        comment=request.form.get("comments","")
+        # Inspector may update only an inspection assigned to their account; Super Admin can update any.
+        if me:=c.execute("SELECT * FROM users WHERE id=?",(session.get("user_id"),)).fetchone():
+            if me["role"]=="SUPER_ADMIN":
+                target=c.execute("SELECT * FROM rfi_inspections WHERE id=? AND rfi_id=?",(iid,rid)).fetchone()
+            else:
+                target=c.execute("SELECT * FROM rfi_inspections WHERE id=? AND rfi_id=? AND inspector_user_id=?",(iid,rid,me["id"])).fetchone()
+            if not target:
+                flash("🚫 You are not assigned to this inspection.","error")
+            else:
+                c.execute("UPDATE rfi_inspections SET decision=?,comments=?,inspection_date=?,signed_at=CURRENT_TIMESTAMP WHERE id=?",(decision,comment,request.form.get("inspection_date") or dt.date.today().isoformat(),iid))
+                decisions=[x["decision"] for x in c.execute("SELECT decision FROM rfi_inspections WHERE rfi_id=?",(rid,)).fetchall()]
+                if any(x=="REJECTED" for x in decisions): overall="REJECTED"
+                elif any(x=="RESUBMISSION REQUIRED" for x in decisions): overall="RESUBMISSION REQUIRED"
+                elif decisions and all(x=="APPROVED" for x in decisions): overall="APPROVED"
+                elif any(x=="APPROVED WITH COMMENTS" for x in decisions): overall="APPROVED WITH COMMENTS"
+                else: overall="PENDING INSPECTION"
+                c.execute("UPDATE rfis SET status=? WHERE id=?",(overall,rid)); c.commit(); flash("✅ Inspection response recorded.","success")
+    r=c.execute("SELECT r.*,p.name project_name,p.client,p.consultant,u.full_name submitter FROM rfis r JOIN projects p ON p.id=r.project_id LEFT JOIN users u ON u.id=r.submitted_by WHERE r.id=?",(rid,)).fetchone()
+    inspections=c.execute("SELECT ri.*,u.full_name,u.username,u.department FROM rfi_inspections ri LEFT JOIN users u ON u.id=ri.inspector_user_id WHERE ri.rfi_id=? ORDER BY ri.id",(rid,)).fetchall(); c.close()
+    return render_template("rfi_detail.html",r=r,inspections=inspections)
+
+@app.route("/projects/<int:pid>/rfi/<int:rid>/print")
+@login_required
+def rfi_print(pid,rid):
+    if not allowed_project(pid): return redirect(url_for("dashboard"))
+    c=db(); r=c.execute("SELECT r.*,p.name project_name,p.client,p.consultant,p.contractor_role,u.full_name submitter FROM rfis r JOIN projects p ON p.id=r.project_id LEFT JOIN users u ON u.id=r.submitted_by WHERE r.id=? AND r.project_id=?",(rid,pid)).fetchone(); inspections=c.execute("SELECT ri.*,u.full_name,u.department,u.username FROM rfi_inspections ri LEFT JOIN users u ON u.id=ri.inspector_user_id WHERE ri.rfi_id=? ORDER BY ri.id",(rid,)).fetchall(); c.close()
+    if not r: return ("RFI not found",404)
+    return render_template("rfi_print.html",r=r,inspections=inspections)
 
 @app.route("/admin/users")
 @admin_required
@@ -405,10 +531,20 @@ def assign_projects(uid):
 def projects_admin():
     c=db()
     if request.method=="POST":
-        try:c.execute("INSERT INTO projects(name,code,location,client,consultant,status,start_date,end_date,contractor_role) VALUES(?,?,?,?,?,?,?,?,?)",(request.form["name"],request.form["code"],request.form["location"],request.form.get("client",""),request.form.get("consultant",""),request.form.get("status","Active"),request.form.get("start_date",""),request.form.get("end_date",""),request.form.get("contractor_role","Main Contractor")));c.commit();flash("🏗️ Project created.","success")
+        try:c.execute("INSERT INTO projects(name,code,location,client,consultant,status,start_date,end_date,contractor_role,contract_sign_date,commencement_date,contract_end_date,contract_days,planned_income,planned_physical_pct,contract_value) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(request.form["name"],request.form["code"],request.form["location"],request.form.get("client",""),request.form.get("consultant",""),request.form.get("status","Active"),request.form.get("start_date","") ,request.form.get("end_date",""),request.form.get("contractor_role","Main Contractor"),request.form.get("contract_sign_date",""),request.form.get("commencement_date",request.form.get("start_date","")),request.form.get("contract_end_date",request.form.get("end_date","")),int(parse_float(request.form.get("contract_days"))),parse_float(request.form.get("planned_income")),parse_float(request.form.get("planned_physical_pct")),parse_float(request.form.get("contract_value"))));c.commit();flash("🏗️ Project created.","success")
         except Exception as e:c.rollback();flash(str(e),"error")
     projects=c.execute("SELECT * FROM projects ORDER BY name").fetchall();c.close();return render_template("projects_admin.html",projects=projects)
 
+
+
+@app.route("/admin/projects/<int:pid>/edit",methods=["GET","POST"])
+@admin_required
+def edit_project(pid):
+    c=db(); p=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone()
+    if not p: c.close(); flash("Project not found.","error"); return redirect(url_for("projects_admin"))
+    if request.method=="POST":
+        c.execute("""UPDATE projects SET name=?,code=?,location=?,client=?,consultant=?,status=?,contractor_role=?,contract_sign_date=?,commencement_date=?,contract_end_date=?,contract_days=?,planned_income=?,planned_physical_pct=?,contract_value=?,start_date=?,end_date=? WHERE id=?""",(request.form["name"],request.form["code"],request.form.get("location",""),request.form.get("client",""),request.form.get("consultant",""),request.form.get("status","Active"),request.form.get("contractor_role","Main Contractor"),request.form.get("contract_sign_date",""),request.form.get("commencement_date",""),request.form.get("contract_end_date",""),int(parse_float(request.form.get("contract_days"))),parse_float(request.form.get("planned_income")),parse_float(request.form.get("planned_physical_pct")),parse_float(request.form.get("contract_value")),request.form.get("start_date",""),request.form.get("end_date",""),pid)); c.commit(); flash("🏗️ Project baseline updated.","success"); p=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone()
+    c.close(); return render_template("project_edit.html",p=p)
 
 def import_boq_xlsx(path,pid):
     wb=load_workbook(path,data_only=True,read_only=True)

@@ -1,0 +1,20 @@
+{% extends "base.html" %}{% block content %}
+<div class="page-title"><div><div class="eyebrow">📋 QUALITY & INSPECTION CONTROL</div><h1>Request for Inspection (RFI)</h1><p>{{p.name}} · RFI requests and inspection approvals</p></div><a class="btn" href="{{url_for('project',pid=p.id)}}">← Project</a></div>
+<div class="dashboard-grid">
+<section class="panel">
+<h2>➕ Create New RFI</h2>
+<form method="post" class="form-grid">
+<label>Request Date<input type="date" name="date_requested" value="{{dt.date.today().isoformat() if dt else ''}}"></label>
+<label>Inspection Date<input type="date" name="inspection_date"></label>
+<label>Location / Chainage<input name="location" placeholder="e.g. 2+720 – 2+780"></label>
+<label>BOQ Item<select name="boq_id"><option value="">-- Select BOQ Item --</option>{% for b in boqs %}<option value="{{b.id}}">{{b.item_no}} — {{b.description}}</option>{% endfor %}</select></label>
+<label>Drawing No.<input name="drawing_no"></label><label>Drawing Revision<input name="drawing_revision"></label>
+<label>Specification / Reference<input name="specification"></label><label>Work Stage<input name="work_stage" placeholder="Formwork / Rebar / Concrete / Earthwork..."></label>
+<label class="full">Description of Work<textarea name="work_description" required placeholder="Describe the work ready for inspection..."></textarea></label>
+<label class="full"><b>👷 Required Inspectors / Participants</b><div class="check-grid">{% for u in users %}<label class="check"><input type="checkbox" name="inspectors" value="{{u.id}}"> {{u.full_name or u.username}} <small>{{u.department}}{% if u.role=='SUPER_ADMIN' %} · RE/DRE/Admin{% endif %}</small></label>{% endfor %}</div></label>
+<div class="full"><button class="btn primary" type="submit">📨 Submit RFI</button></div>
+</form></section>
+<section class="panel"><h2>📊 RFI Summary</h2><div class="cards compact"><div class="stat"><span>📋</span><b>{{rfis|length}}</b><small>Total RFIs</small></div><div class="stat"><span>⏳</span><b>{{rfis|selectattr('status','equalto','PENDING INSPECTION')|list|length}}</b><small>Pending</small></div><div class="stat"><span>✅</span><b>{{rfis|selectattr('status','equalto','APPROVED')|list|length}}</b><small>Approved</small></div><div class="stat"><span>❌</span><b>{{rfis|selectattr('status','equalto','REJECTED')|list|length}}</b><small>Rejected</small></div></div></section>
+</div>
+<section class="panel"><div class="section-head"><h2>📑 RFI Register</h2><span class="live"><i></i> LIVE</span></div><div class="scroll-table"><table><tr><th>RFI No.</th><th>Requested</th><th>Inspection</th><th>Location</th><th>Work</th><th>Inspectors</th><th>Status</th><th></th></tr>{% for r in rfis %}<tr><td><b>{{r.rfi_no}}</b></td><td>{{r.date_requested}}</td><td>{{r.inspection_date or '—'}}</td><td>{{r.location or '—'}}</td><td>{{r.work_description|truncate(55)}}</td><td>{{r.inspector_count}}</td><td><span class="badge">{{'🟢 ' if r.status=='APPROVED' else '🔴 ' if r.status=='REJECTED' else '🟡 '}}{{r.status}}</span></td><td><a class="btn small" href="{{url_for('rfi_detail',pid=p.id,rid=r.id)}}">Open</a></td></tr>{% else %}<tr><td colspan="8">No RFIs registered yet.</td></tr>{% endfor %}</table></div></section>
+{% endblock %}
