@@ -1,6 +1,6 @@
 import os, sqlite3, calendar, datetime as dt, json
 from functools import wraps
-from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, send_from_directory
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from openpyxl import load_workbook
@@ -8,7 +8,10 @@ from openpyxl import load_workbook
 BASE=os.path.dirname(os.path.abspath(__file__))
 DB=os.path.join(BASE,"bagc.db")
 UPLOADS=os.path.join(BASE,"uploads")
+USER_PHOTOS=os.path.join(UPLOADS,"user_photos")
 os.makedirs(UPLOADS,exist_ok=True)
+os.makedirs(USER_PHOTOS,exist_ok=True)
+ALLOWED_PHOTO_EXT={"jpg","jpeg","png","webp"}
 app=Flask(__name__)
 app.secret_key=os.environ.get("SECRET_KEY","bagc-change-this-secret")
 
@@ -56,7 +59,7 @@ def make_staff_id(department, seq):
 def init_db():
     c=db()
     c.executescript('''
-    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,position TEXT,location TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,position TEXT,location TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,photo_filename TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,name TEXT UNIQUE,code TEXT,location TEXT,client TEXT,consultant TEXT,status TEXT DEFAULT 'Active',start_date TEXT,end_date TEXT);
     CREATE TABLE IF NOT EXISTS user_projects(user_id INTEGER,project_id INTEGER,UNIQUE(user_id,project_id));
     CREATE TABLE IF NOT EXISTS boq(id INTEGER PRIMARY KEY,project_id INTEGER,item_no TEXT,description TEXT,unit TEXT,rate REAL DEFAULT 0,contract_qty REAL DEFAULT 0,source_sheet TEXT,UNIQUE(project_id,item_no));
@@ -89,6 +92,7 @@ def init_db():
     existing_u=[r['name'] for r in c.execute("PRAGMA table_info(users)").fetchall()]
     if 'position' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN position TEXT")
     if 'staff_id' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN staff_id TEXT")
+    if 'photo_filename' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN photo_filename TEXT")
     for ur in c.execute("SELECT id,department,staff_id FROM users").fetchall():
         if not ur['staff_id'] or str(ur['staff_id']).startswith('BAGC-') and str(ur['staff_id'])[5:].isdigit(): c.execute("UPDATE users SET staff_id=? WHERE id=?",(make_staff_id(ur['department'],ur['id']),ur['id']))
     existing=[r['name'] for r in c.execute("PRAGMA table_info(machines)").fetchall()]
@@ -617,6 +621,10 @@ def rfi_print(pid,rid):
     if not r: return ("RFI not found",404)
     return render_template("rfi_print.html",r=r,inspections=inspections)
 
+@app.route("/uploads/user_photos/<path:filename>")
+def user_photo(filename):
+    return send_from_directory(USER_PHOTOS, filename)
+
 @app.route("/admin/users")
 @admin_required
 def users():
@@ -627,11 +635,48 @@ def users():
 def add_user():
     c=db()
     try:
-        role="SUPER_ADMIN" if request.form["role"]=="SUPER_ADMIN" else "STAFF";c.execute("INSERT INTO users(full_name,username,password_hash,department,position,location,role) VALUES(?,?,?,?,?,?,?)",(request.form["full_name"],request.form["username"],generate_password_hash(request.form["password"]),request.form["department"],request.form.get("position","Other"),request.form["location"],role));uid=c.execute("SELECT id FROM users WHERE username=?",(request.form["username"],)).fetchone()["id"]; urow=c.execute("SELECT department,id FROM users WHERE id=?",(uid,)).fetchone(); c.execute("UPDATE users SET staff_id=? WHERE id=?",(make_staff_id(urow['department'],uid),uid))
-        for pid in request.form.getlist("project_ids"):c.execute("INSERT OR IGNORE INTO user_projects(user_id,project_id) VALUES(?,?)",(uid,pid))
-        c.commit();flash("👤 User created with project permissions.","success")
-    except Exception as e:c.rollback();flash("Could not create user: "+str(e),"error")
-    c.close();return redirect(url_for("users"))
+        photo=request.files.get("photo")
+        if not photo or not photo.filename:
+            raise ValueError("Staff photo is required. Upload a passport-style JPG, PNG or WEBP photo.")
+        ext=secure_filename(photo.filename).rsplit('.',1)[-1].lower() if '.' in photo.filename else ''
+        if ext not in ALLOWED_PHOTO_EXT: raise ValueError("Photo must be JPG, JPEG, PNG or WEBP.")
+        role="SUPER_ADMIN" if request.form.get("role")=="SUPER_ADMIN" else "STAFF"
+        c.execute("INSERT INTO users(full_name,username,password_hash,department,position,location,role,photo_filename) VALUES(?,?,?,?,?,?,?,?)",(request.form["full_name"].strip(),request.form["username"].strip(),generate_password_hash(request.form["password"]),request.form["department"],request.form.get("position","Other"),request.form.get("location","").strip(),role,None))
+        uid=c.execute("SELECT id FROM users WHERE username=?",(request.form["username"].strip(),)).fetchone()["id"]
+        staff_id=make_staff_id(request.form["department"],uid)
+        filename=f"{staff_id}_{uid}.{ext}"
+        photo.save(os.path.join(USER_PHOTOS,filename))
+        c.execute("UPDATE users SET staff_id=?,photo_filename=? WHERE id=?",(staff_id,filename,uid))
+        for pid in request.form.getlist("project_ids"): c.execute("INSERT OR IGNORE INTO user_projects(user_id,project_id) VALUES(?,?)",(uid,pid))
+        c.commit(); flash(f"👤 Staff registered permanently: {staff_id}. The account can be disabled later, but it is never deleted.","success")
+    except Exception as e:
+        c.rollback(); flash("Could not create user: "+str(e),"error")
+    c.close(); return redirect(url_for("users"))
+
+@app.route("/admin/users/<int:uid>/photo",methods=["POST"])
+@admin_required
+def update_user_photo(uid):
+    photo=request.files.get("photo")
+    c=db(); u=c.execute("SELECT * FROM users WHERE id=?",(uid,)).fetchone()
+    if not u: c.close(); flash("User not found.","error"); return redirect(url_for("users"))
+    try:
+        if not photo or not photo.filename: raise ValueError("Select a photo.")
+        ext=secure_filename(photo.filename).rsplit('.',1)[-1].lower() if '.' in photo.filename else ''
+        if ext not in ALLOWED_PHOTO_EXT: raise ValueError("Photo must be JPG, JPEG, PNG or WEBP.")
+        if u['photo_filename']:
+            old=os.path.join(USER_PHOTOS,u['photo_filename'])
+            if os.path.isfile(old): os.remove(old)
+        filename=f"{u['staff_id']}_{uid}.{ext}"
+        photo.save(os.path.join(USER_PHOTOS,filename)); c.execute("UPDATE users SET photo_filename=? WHERE id=?",(filename,uid)); c.commit(); flash("📷 Staff photo updated.","success")
+    except Exception as e: c.rollback(); flash("Photo update failed: "+str(e),"error")
+    c.close(); return redirect(url_for("users"))
+
+@app.route("/admin/users/<int:uid>/id-card")
+@admin_required
+def user_id_card(uid):
+    c=db(); u=c.execute("SELECT * FROM users WHERE id=?",(uid,)).fetchone(); c.close()
+    if not u: return ("User not found",404)
+    return render_template("user_id_card.html",u=u)
 
 @app.route("/admin/users/<int:uid>/reset",methods=["POST"])
 @admin_required
@@ -676,41 +721,96 @@ def edit_project(pid):
         c.execute("""UPDATE projects SET name=?,code=?,location=?,client=?,consultant=?,status=?,contractor_role=?,contract_sign_date=?,commencement_date=?,contract_end_date=?,contract_days=?,planned_income=?,planned_physical_pct=?,contract_value=?,start_date=?,end_date=? WHERE id=?""",(request.form["name"],request.form["code"],request.form.get("location",""),request.form.get("client",""),request.form.get("consultant",""),request.form.get("status","Active"),request.form.get("contractor_role","Main Contractor"),request.form.get("contract_sign_date",""),request.form.get("commencement_date",""),request.form.get("contract_end_date",""),int(parse_float(request.form.get("contract_days"))),parse_float(request.form.get("planned_income")),parse_float(request.form.get("planned_physical_pct")),parse_float(request.form.get("contract_value")),request.form.get("start_date",""),request.form.get("end_date",""),pid)); c.commit(); flash("🏗️ Project baseline updated.","success"); p=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone()
     c.close(); return render_template("project_edit.html",p=p)
 
+def _norm_header(v):
+    if v is None: return ""
+    x=str(v).strip().lower().replace("\n"," ")
+    for ch in [".",":","/","\\","(",")","-","_"]:
+        x=x.replace(ch," ")
+    return " ".join(x.split())
+
+def _excel_number(v):
+    if v is None or v=="": return 0.0
+    if isinstance(v,(int,float)): return float(v)
+    x=str(v).strip().replace(",","").replace("ETB","").replace("Birr","").strip()
+    if x.startswith("="): return 0.0
+    try: return float(x)
+    except Exception: return 0.0
+
 def import_boq_xlsx(path,pid):
-    wb=load_workbook(path,data_only=True,read_only=True)
-    c=db(); count=0; sheets=[]
+    """Import real-world BOQ spreadsheets without requiring exact column wording.
+    Finds the header row anywhere in each sheet and accepts common Ethiopian/contract BOQ labels.
+    """
+    wb_values=load_workbook(path,data_only=True,read_only=True)
+    wb_formulas=load_workbook(path,data_only=False,read_only=True)
+    c=db(); count=0; sheets=[]; scanned=0
     try:
-        for ws in wb.worksheets:
-            rows=list(ws.iter_rows(min_row=1,max_row=min(ws.max_row or 1,5000),values_only=True))
-            header=None; header_idx=None
+        for ws_val, ws_formula in zip(wb_values.worksheets, wb_formulas.worksheets):
+            max_rows=min(ws_val.max_row or 1,10000)
+            rows=list(ws_val.iter_rows(min_row=1,max_row=max_rows,values_only=True))
+            header_idx=None; header=None
             for idx,row in enumerate(rows):
-                vals=[str(v).strip().lower() if v is not None else "" for v in row]
-                if any("item no" in v or v in ("item number","item no.") for v in vals) and any("description" in v or "activity" in v for v in vals) and any(v=="unit" or v.endswith(" unit") for v in vals) and any("rate" in v for v in vals):
-                    header=vals; header_idx=idx; break
-            if header is None: continue
-            def col(names):
+                vals=[_norm_header(v) for v in row]
+                joined=" | ".join(vals)
+                has_item=any(v in vals or v.startswith("item no") or v.startswith("item number") or v in ("no","s no","s n","bill item","bill no") for v in vals)
+                has_desc=any(("description" in v) or ("activity" in v) or ("work description" in v) or ("particular" in v) or ("item description" in v) for v in vals)
+                has_unit=any(v=="unit" or v.endswith(" unit") or v=="uom" for v in vals)
+                has_qty=any(("quantity" in v) or v in ("qty","contract qty","contract quantity","total quantity") for v in vals)
+                has_rate=any(("rate" in v) or ("unit price" in v) or ("unit cost" in v) or ("price"==v) for v in vals)
+                if has_desc and has_unit and has_rate and (has_item or has_qty):
+                    header_idx=idx; header=vals; break
+            if header_idx is None: continue
+            def find_col(kind):
+                exact={
+                  "item": ["item no","item number","item no.","bill item","bill no","no","s no","s n","item"],
+                  "desc": ["description","description of work","description of works","work description","activity","particular","particulars","item description"],
+                  "unit": ["unit","uom","unit of measurement"],
+                  "qty": ["contract quantity","contract qty","total contract quantity","quantity","qty","total quantity","original quantity"],
+                  "rate": ["contract rate","unit rate","unit price","unit cost","rate","price"],
+                }[kind]
                 for i,v in enumerate(header):
-                    if any(n in v for n in names): return i
+                    if v in exact: return i
+                for i,v in enumerate(header):
+                    if any(x in v for x in exact): return i
                 return None
-            ci=col(["item no","item number","item no."]); cd=col(["description","general activity","activity"]); cu=col(["unit"]); cq=col(["total contract quantity","contract quantity","quantity","qty"]); cr=col(["contract rate","unit rate","rate"])
-            if None in (ci,cd,cu,cr): continue
+            ci,cd,cu,cq,cr=[find_col(k) for k in ("item","desc","unit","qty","rate")]
+            if cd is None or cu is None or cr is None or (ci is None and cq is None): continue
             sheet_count=0
-            for row in rows[header_idx+1:]:
-                if ci>=len(row) or cd>=len(row): continue
-                item,desc=row[ci],row[cd]
-                if item is None or desc is None: continue
-                item_s=str(item).strip(); desc_s=str(desc).strip()
-                if not item_s or not desc_s or item_s.lower() in ("item no","item number","item"): continue
-                rate=parse_float(row[cr]) if cr<len(row) else 0
-                qty=parse_float(row[cq]) if cq is not None and cq<len(row) else 0
-                unit=str(row[cu]).strip() if cu<len(row) and row[cu] is not None else ""
-                if not unit and rate==0 and qty==0: continue
-                c.execute("INSERT INTO boq(project_id,item_no,description,unit,rate,contract_qty,source_sheet) VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,item_no) DO UPDATE SET description=excluded.description,unit=excluded.unit,rate=excluded.rate,contract_qty=excluded.contract_qty,source_sheet=excluded.source_sheet",(pid,item_s,desc_s,unit,rate,qty,ws.title)); count+=1; sheet_count+=1
-            if sheet_count: sheets.append(f"{ws.title} ({sheet_count})")
+            for row_idx,row in enumerate(rows[header_idx+1:], start=header_idx+2):
+                scanned+=1
+                def cell(i): return row[i] if i is not None and i<len(row) else None
+                item=cell(ci); desc=cell(cd); unit=cell(cu)
+                # Skip repeated headers, section totals and empty lines.
+                item_s="" if item is None else str(item).strip()
+                desc_s="" if desc is None else str(desc).strip()
+                if not desc_s or not item_s: continue
+                if _norm_header(item_s) in {"no","item","item no","item number","total","subtotal"}: continue
+                lowdesc=_norm_header(desc_s)
+                if lowdesc in {"description","description of works","description of work","activity"}: continue
+                qty=_excel_number(cell(cq)); rate=_excel_number(cell(cr))
+                unit_s="" if unit is None else str(unit).strip()
+                # Some BOQs have formulas in the data-only workbook. Try the formula workbook's cached-looking numeric cells.
+                if rate==0 and cr is not None and row_idx<=ws_formula.max_row:
+                    try:
+                        fv=ws_formula.cell(row=row_idx,column=cr+1).value
+                        if isinstance(fv,(int,float)): rate=float(fv)
+                    except Exception: pass
+                if qty==0 and cq is not None and row_idx<=ws_formula.max_row:
+                    try:
+                        qv=ws_formula.cell(row=row_idx,column=cq+1).value
+                        if isinstance(qv,(int,float)): qty=float(qv)
+                    except Exception: pass
+                # A valid BOQ row should contain at least a unit or a numeric quantity/rate.
+                if not unit_s and qty==0 and rate==0: continue
+                c.execute("INSERT INTO boq(project_id,item_no,description,unit,rate,contract_qty,source_sheet) VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,item_no) DO UPDATE SET description=excluded.description,unit=excluded.unit,rate=excluded.rate,contract_qty=excluded.contract_qty,source_sheet=excluded.source_sheet",(pid,item_s,desc_s,unit_s,rate,qty,ws_val.title))
+                count+=1; sheet_count+=1
+            if sheet_count: sheets.append(f"{ws_val.title} ({sheet_count})")
         c.commit()
+    except Exception:
+        c.rollback(); raise
     finally:
-        c.close(); wb.close()
-    if not sheets: raise ValueError("No BOQ rows found. Use headers such as Item No, Description, Unit, Contract Quantity and Rate.")
+        c.close(); wb_values.close(); wb_formulas.close()
+    if not sheets:
+        raise ValueError("No BOQ rows were detected. The file must contain columns similar to Item No/No., Description of Works, Unit, Quantity and Rate/Unit Price.")
     return count, ", ".join(sheets)
 
 @app.route("/admin/boq/<int:pid>",methods=["GET","POST"])
