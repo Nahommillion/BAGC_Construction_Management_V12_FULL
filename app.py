@@ -20,6 +20,7 @@ app=Flask(__name__)
 app.secret_key=os.environ.get("SECRET_KEY","bagc-change-this-secret")
 
 DEPARTMENTS=["Administration","Design","Machinery","Finance","HR","Store","Project"]
+HEAD_OFFICE_STRUCTURE=[("General Manager",None,"Management"),("Operational Manager","General Manager","Management"),("Equipment & Store Department","Operational Manager","Department"),("Contract Administration Team","Operational Manager","Team"),("Engineering Team","Operational Manager","Team"),("HR Team","Operational Manager","Team"),("Finance Team","Operational Manager","Team"),("Project Management Team","Engineering Team","Team"),("Machinery Team","Equipment & Store Department","Team"),("Fuel Team","Equipment & Store Department","Team")]
 UNIT_CATALOG=["m","m²","m³","mm","cm","kg","ton","litre","L","pcs","pc","no","set","lot","item","bag","roll","sheet","length","day","hour","hr","month","lump sum"]
 MACHINE_TYPES=["Dozer","Excavator","Wheel Loader","Backhoe Loader","Motor Grader","Roller","Dump Truck","Fuel Truck","Water Truck","Shower Truck","Crane","Forklift","Concrete Mixer","Concrete Pump","Batching Plant","Crusher","Asphalt Plant","Asphalt Paver","Bitumen Distributor","Road Sweeper","Generator","Welding Machine","Vibrator","Air Compressor","Pickup","Other"]
 MATERIAL_CATEGORIES=["Common Construction","Earthworks","Concrete","Rebar","Structural Steel / RHS","Formwork","Masonry","Roofing","Waterproofing","Finishing","Tiles","Natural Stone","Sanitary","Plumbing","Drainage","Electrical","Low Voltage / ICT","Aluminium","Glass","Road Works","Culverts","Landscaping","Fuel & Oil","Lubricants","Spare Parts","Welding / Cutting","PPE / Safety","Stationery & Cleaning","Tools","Other"]
@@ -45,7 +46,7 @@ DESIGN_STATUSES=["Draft","Submitted","Under Review","Approved","Approved with Co
 
 @app.context_processor
 def template_helpers():
-    return {"dt": dt}
+    return {"dt": dt, "head_office_units": HEAD_OFFICE_STRUCTURE}
 
 
 def db():
@@ -72,8 +73,9 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     c.executescript('''
-    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,position TEXT,location TEXT,phone TEXT,email TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,photo_filename TEXT,last_login TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,position TEXT,location TEXT,phone TEXT,email TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,photo_filename TEXT,last_login TEXT,org_unit_id INTEGER,reports_to_user_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,name TEXT UNIQUE,code TEXT,location TEXT,client TEXT,consultant TEXT,status TEXT DEFAULT 'Active',start_date TEXT,end_date TEXT);
+    CREATE TABLE IF NOT EXISTS org_units(id INTEGER PRIMARY KEY,name TEXT UNIQUE,parent_id INTEGER,unit_type TEXT DEFAULT 'Team',active INTEGER DEFAULT 1,manager_user_id INTEGER,sort_order INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS user_projects(user_id INTEGER,project_id INTEGER,UNIQUE(user_id,project_id));
     CREATE TABLE IF NOT EXISTS boq(id INTEGER PRIMARY KEY,project_id INTEGER,item_no TEXT,description TEXT,unit TEXT,rate REAL DEFAULT 0,contract_qty REAL DEFAULT 0,source_sheet TEXT,series TEXT DEFAULT '',title TEXT DEFAULT '',UNIQUE(project_id,item_no));
     CREATE TABLE IF NOT EXISTS boq_settings(id INTEGER PRIMARY KEY,project_id INTEGER UNIQUE,title TEXT DEFAULT '',revision TEXT DEFAULT '',effective_date TEXT);
@@ -106,7 +108,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS rfi_inspections(id INTEGER PRIMARY KEY,rfi_id INTEGER,inspector_user_id INTEGER,inspector_role TEXT,decision TEXT DEFAULT 'PENDING',comments TEXT,inspection_date TEXT,signed_at TEXT,UNIQUE(rfi_id,inspector_user_id));
     CREATE TABLE IF NOT EXISTS rfi_steps(id INTEGER PRIMARY KEY,rfi_id INTEGER,step_order INTEGER,stage TEXT,assigned_user_id INTEGER,decision TEXT DEFAULT 'PENDING',comments TEXT,inspection_date TEXT,signed_at TEXT,UNIQUE(rfi_id,step_order));
     CREATE TABLE IF NOT EXISTS saved_reports(id INTEGER PRIMARY KEY,project_id INTEGER,report_no TEXT,report_type TEXT,scope TEXT DEFAULT 'ALL',start_date TEXT,end_date TEXT,generated_by INTEGER,generated_at TEXT DEFAULT CURRENT_TIMESTAMP,snapshot_json TEXT,source_report_ids TEXT DEFAULT '[]',UNIQUE(project_id,report_type,scope,start_date,end_date));
-    CREATE TABLE IF NOT EXISTS machine_assignments(id INTEGER PRIMARY KEY,machine_id INTEGER,project_id INTEGER,start_date TEXT,start_hour REAL DEFAULT 0,end_date TEXT,end_hour REAL,status TEXT DEFAULT 'ACTIVE',assigned_by INTEGER,ended_by INTEGER,ended_at TEXT,notes TEXT);
+    CREATE TABLE IF NOT EXISTS machine_assignments(id INTEGER PRIMARY KEY,machine_id INTEGER,project_id INTEGER,start_date TEXT,start_hour REAL DEFAULT 0,total_signed_hours REAL DEFAULT 0,hours_used REAL DEFAULT 0,end_date TEXT,end_hour REAL,status TEXT DEFAULT 'ACTIVE',assigned_by INTEGER,ended_by INTEGER,ended_at TEXT,notes TEXT);
     ''')
     # Safe migrations for databases created by earlier BAGC versions.
     existing_bq=[r['name'] for r in c.execute("PRAGMA table_info(boq)").fetchall()]
@@ -115,7 +117,7 @@ def init_db():
     existing_sr=[r['name'] for r in c.execute("PRAGMA table_info(saved_reports)").fetchall()]
     if 'source_report_ids' not in existing_sr: c.execute("ALTER TABLE saved_reports ADD COLUMN source_report_ids TEXT DEFAULT '[]'")
     existing_u=[r['name'] for r in c.execute("PRAGMA table_info(users)").fetchall()]
-    for col,typ in [('phone','TEXT'),('email','TEXT'),('last_login','TEXT')]:
+    for col,typ in [('phone','TEXT'),('email','TEXT'),('last_login','TEXT'),('org_unit_id','INTEGER'),('reports_to_user_id','INTEGER')]:
         if col not in existing_u: c.execute(f"ALTER TABLE users ADD COLUMN {col} {typ}")
     if 'position' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN position TEXT")
     if 'staff_id' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN staff_id TEXT")
@@ -143,6 +145,10 @@ def init_db():
     existing_ma=[r['name'] for r in c.execute("PRAGMA table_info(machine_assignments)").fetchall()]
     for col,typ in [('total_signed_hours','REAL DEFAULT 0'),('hours_used','REAL DEFAULT 0')]:
         if col not in existing_ma: c.execute(f"ALTER TABLE machine_assignments ADD COLUMN {col} {typ}")
+    # Final schema verification for legacy deployments. Never fail because a column already exists.
+    existing_ma=[r['name'] for r in c.execute("PRAGMA table_info(machine_assignments)").fetchall()]
+    if 'total_signed_hours' not in existing_ma: c.execute("ALTER TABLE machine_assignments ADD COLUMN total_signed_hours REAL DEFAULT 0")
+    if 'hours_used' not in existing_ma: c.execute("ALTER TABLE machine_assignments ADD COLUMN hours_used REAL DEFAULT 0")
     existing_m=[r['name'] for r in c.execute("PRAGMA table_info(machines)").fetchall()]
     if 'rate_unit' not in existing_m: c.execute("ALTER TABLE machines ADD COLUMN rate_unit TEXT DEFAULT 'hr'")
     for col,typ in [('assignment_start_date','TEXT'),('assignment_start_hour','REAL DEFAULT 0'),('assignment_end_date','TEXT'),('assignment_end_hour','REAL'),('total_signed_hours','REAL DEFAULT 0'),('hours_used','REAL DEFAULT 0'),('lifecycle_status',"TEXT DEFAULT 'ACTIVE'"),('assignment_signed_by','INTEGER'),('assignment_ended_by','INTEGER'),('assignment_ended_at','TEXT')]:
@@ -153,7 +159,13 @@ def init_db():
     existing_p=[r['name'] for r in c.execute("PRAGMA table_info(projects)").fetchall()]
     for col,typ in [('contractor_role',"TEXT DEFAULT 'Main Contractor'"),('contract_sign_date','TEXT'),('commencement_date','TEXT'),('contract_end_date','TEXT'),('contract_days','INTEGER DEFAULT 0'),('planned_income','REAL DEFAULT 0'),('planned_physical_pct','REAL DEFAULT 0'),('contract_value','REAL DEFAULT 0')]:
         if col not in existing_p: c.execute(f"ALTER TABLE projects ADD COLUMN {col} {typ}")
-    # ENV-controlled Super Admin synchronization fixes an already-created SQLite DB.
+    # Head Office organization structure. Existing records are preserved.
+    org_ids={}
+    for idx,(name,parent_name,unit_type) in enumerate(HEAD_OFFICE_STRUCTURE,1):
+        parent_id=org_ids.get(parent_name)
+        c.execute("INSERT OR IGNORE INTO org_units(name,parent_id,unit_type,sort_order) VALUES(?,?,?,?)",(name,parent_id,unit_type,idx))
+        row=c.execute("SELECT id FROM org_units WHERE name=?",(name,)).fetchone(); org_ids[name]=row["id"]
+        # ENV-controlled Super Admin synchronization fixes an already-created SQLite DB.
     u=os.environ.get("ADMIN_USERNAME","admin").strip() or "admin"
     p=os.environ.get("ADMIN_PASSWORD","admin123")
     admin=c.execute("SELECT id FROM users WHERE role='SUPER_ADMIN' ORDER BY id LIMIT 1").fetchone()
@@ -323,7 +335,8 @@ def home():
     c.close()
     data=dashboard_data(); allowed_ids={p["id"] for p in projects}; data=[x for x in data if x["p"]["id"] in allowed_ids]
     totals={k:sum(x[k] for x in data) for k in ["income","expense","machine_expense","manpower_expense","store_expense","other_expense"]}
-    return render_template("dashboard.html",data=data,totals=totals)
+    c=db(); org_units=c.execute("SELECT o.*,p.name parent_name,mu.full_name manager_name FROM org_units o LEFT JOIN org_units p ON p.id=o.parent_id LEFT JOIN users mu ON mu.id=o.manager_user_id WHERE o.active=1 ORDER BY o.sort_order,o.name").fetchall(); staff=c.execute("SELECT u.*,o.name org_name,m.full_name manager_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id LEFT JOIN users m ON m.id=u.reports_to_user_id WHERE u.active=1 ORDER BY o.sort_order,o.name,u.full_name").fetchall(); c.close()
+    return render_template("dashboard.html",data=data,totals=totals,org_units=org_units,staff=staff)
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -674,7 +687,9 @@ def machinery(pid):
     if request.method=="POST":
         action=request.form.get("action")
         if action=="add":
-            c.execute("INSERT INTO machines(project_id,machine_type,code,plate_no,engine_no,ownership,hourly_rate,rate_unit,expected_fuel,fuel_price,lifecycle_status) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form["machine_type"],request.form["code"],request.form.get("plate_no",request.form["code"]),request.form.get("engine_no",""),request.form["ownership"],parse_float(request.form["hourly_rate"]),request.form.get("rate_unit","hr"),parse_float(request.form["expected_fuel"]),parse_float(request.form.get("fuel_price")),"UNASSIGNED"))
+            machine_type=request.form["machine_type"]
+            allowed_rate_unit=request.form.get("rate_unit","hr") if machine_type in ["Dump Truck","Fuel Truck","Water Truck","Shower Truck"] else "hr"
+            c.execute("INSERT INTO machines(project_id,machine_type,code,plate_no,engine_no,ownership,hourly_rate,rate_unit,expected_fuel,fuel_price,lifecycle_status) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,machine_type,request.form["code"],request.form.get("plate_no",request.form["code"]),request.form.get("engine_no",""),request.form["ownership"],parse_float(request.form["hourly_rate"]),allowed_rate_unit,parse_float(request.form["expected_fuel"]),parse_float(request.form.get("fuel_price")),"UNASSIGNED"))
             flash("🚜 Machine added to this project's fleet.","success")
         elif action=="remove":c.execute("UPDATE machines SET active=0 WHERE id=? AND project_id=?",(request.form["machine_id"],pid));flash("Machine removed from active fleet.","success")
         elif action=="log":
@@ -879,10 +894,47 @@ def rfi_print(pid,rid):
 def user_photo(filename):
     return send_from_directory(USER_PHOTOS, filename)
 
+@app.route("/admin/head-office")
+@admin_required
+def head_office():
+    c=db(); units=c.execute("SELECT o.*,p.name parent_name,mu.full_name manager_name FROM org_units o LEFT JOIN org_units p ON p.id=o.parent_id LEFT JOIN users mu ON mu.id=o.manager_user_id WHERE o.active=1 ORDER BY o.sort_order,o.name").fetchall(); staff=c.execute("SELECT u.*,o.name org_name,m.full_name manager_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id LEFT JOIN users m ON m.id=u.reports_to_user_id WHERE u.active=1 ORDER BY o.sort_order,o.name,u.full_name").fetchall(); users_all=c.execute("SELECT id,full_name,position,department FROM users WHERE active=1 ORDER BY full_name").fetchall(); c.close(); return render_template("head_office.html",units=units,staff=staff,users_all=users_all)
+
+@app.route("/admin/head-office/unit",methods=["POST"])
+@admin_required
+def add_org_unit():
+    c=db()
+    try:
+        name=request.form.get("name","").strip(); parent_id=request.form.get("parent_id") or None; unit_type=request.form.get("unit_type","Team"); manager=request.form.get("manager_user_id") or None
+        if not name: raise ValueError("Organization unit name is required.")
+        c.execute("INSERT INTO org_units(name,parent_id,unit_type,manager_user_id,sort_order) VALUES(?,?,?,?,COALESCE((SELECT MAX(sort_order)+1 FROM org_units),1))",(name,parent_id,unit_type,manager))
+        c.commit(); flash("🏢 Head Office structure unit added.","success")
+    except Exception as e: c.rollback(); flash("Could not add structure unit: "+str(e),"error")
+    c.close(); return redirect(url_for("head_office"))
+
+@app.route("/admin/head-office/unit/<int:oid>",methods=["POST"])
+@admin_required
+def edit_org_unit(oid):
+    c=db()
+    try:
+        c.execute("UPDATE org_units SET name=?,parent_id=?,unit_type=?,manager_user_id=? WHERE id=?",(request.form.get("name","").strip(),request.form.get("parent_id") or None,request.form.get("unit_type","Team"),request.form.get("manager_user_id") or None,oid)); c.commit(); flash("🏢 Structure updated.","success")
+    except Exception as e: c.rollback(); flash("Could not update structure: "+str(e),"error")
+    c.close(); return redirect(url_for("head_office"))
+
+@app.route("/admin/head-office/staff/<int:uid>",methods=["POST"])
+@admin_required
+def assign_head_office_staff(uid):
+    c=db()
+    try:
+        c.execute("UPDATE users SET org_unit_id=?,reports_to_user_id=? WHERE id=?",(request.form.get("org_unit_id") or None,request.form.get("reports_to_user_id") or None,uid)); c.commit(); flash("👤 Staff hierarchy updated.","success")
+    except Exception as e: c.rollback(); flash("Could not update staff hierarchy: "+str(e),"error")
+    c.close(); return redirect(url_for("head_office"))
+
 @app.route("/admin/users")
 @admin_required
 def users():
-    c=db();users=c.execute("SELECT * FROM users ORDER BY full_name").fetchall();projects=c.execute("SELECT * FROM projects ORDER BY name").fetchall();assign={u["id"]:[r["project_id"] for r in c.execute("SELECT project_id FROM user_projects WHERE user_id=?",(u["id"],)).fetchall()] for u in users};c.close();return render_template("users.html",users=users,projects=projects,assign=assign)
+    c=db(); users=c.execute("SELECT u.*,o.name org_unit_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id ORDER BY u.full_name").fetchall(); projects=c.execute("SELECT * FROM projects ORDER BY name").fetchall(); units=c.execute("SELECT * FROM org_units WHERE active=1 ORDER BY sort_order,name").fetchall()
+    assign={u["id"]:[r["project_id"] for r in c.execute("SELECT project_id FROM user_projects WHERE user_id=?",(u["id"],)).fetchall()] for u in users}; c.close()
+    return render_template("users.html",users=users,projects=projects,assign=assign,org_units=units)
 
 @app.route("/admin/users/add",methods=["POST"])
 @admin_required
@@ -898,10 +950,10 @@ def add_user():
         ext=secure_filename(photo.filename).rsplit('.',1)[-1].lower() if '.' in photo.filename else ''
         if ext not in ALLOWED_PHOTO_EXT: raise ValueError("Photo must be JPG, JPEG, PNG or WEBP.")
         role="SUPER_ADMIN" if request.form.get("role")=="SUPER_ADMIN" else "STAFF"
-        vals=(request.form["full_name"].strip(),request.form["username"].strip(),generate_password_hash(request.form["password"]),request.form["department"],request.form.get("position","Other"),request.form.get("location","").strip(),request.form.get("phone","").strip(),request.form.get("email","").strip(),role)
+        vals=(request.form["full_name"].strip(),request.form["username"].strip(),generate_password_hash(request.form["password"]),request.form["department"],request.form.get("position","Other"),request.form.get("location","").strip(),request.form.get("phone","").strip(),request.form.get("email","").strip(),role,request.form.get("org_unit_id") or None,request.form.get("reports_to_user_id") or None)
         for attempt in range(5):
             try:
-                c.execute("INSERT INTO users(full_name,username,password_hash,department,position,location,phone,email,role,photo_filename) VALUES(?,?,?,?,?,?,?,?,?,?)",vals+ (None,))
+                c.execute("INSERT INTO users(full_name,username,password_hash,department,position,location,phone,email,role,org_unit_id,reports_to_user_id,photo_filename) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",vals+ (None,))
                 uid=c.execute("SELECT id FROM users WHERE username=?",(request.form["username"].strip(),)).fetchone()["id"]
                 staff_id=make_staff_id(request.form["department"],uid)
                 filename=f"{staff_id}_{uid}.{ext}"
@@ -979,7 +1031,7 @@ def edit_user(uid):
         if not username: raise ValueError("Username is required.")
         clash=c.execute("SELECT id FROM users WHERE username=? AND id<>?",(username,uid)).fetchone()
         if clash: raise ValueError("Username already exists.")
-        c.execute("UPDATE users SET full_name=?,username=?,department=?,position=?,location=?,phone=?,email=?,role=? WHERE id=?",(request.form.get("full_name","").strip(),username,request.form.get("department","Project"),request.form.get("position","Other"),request.form.get("location","").strip(),request.form.get("phone","").strip(),request.form.get("email","").strip(),role,uid))
+        c.execute("UPDATE users SET full_name=?,username=?,department=?,position=?,location=?,phone=?,email=?,role=?,org_unit_id=?,reports_to_user_id=? WHERE id=?",(request.form.get("full_name","").strip(),username,request.form.get("department","Project"),request.form.get("position","Other"),request.form.get("location","").strip(),request.form.get("phone","").strip(),request.form.get("email","").strip(),role,request.form.get("org_unit_id") or None,request.form.get("reports_to_user_id") or None,uid))
         c.commit(); flash("✏️ User profile, department, position and role updated.","success")
     except Exception as e: c.rollback(); flash("User update failed: "+str(e),"error")
     c.close(); return redirect(url_for("users"))
