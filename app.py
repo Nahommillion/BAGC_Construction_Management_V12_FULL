@@ -627,10 +627,12 @@ def assign_machine(pid):
         active=c.execute("SELECT id FROM machine_assignments WHERE machine_id=? AND project_id=? AND status='ACTIVE'",(mid,pid)).fetchone()
         if active: raise ValueError("This machine already has an active signed assignment.")
         start_date=request.form.get("start_date") or dt.date.today().isoformat(); start_hour=parse_float(request.form.get("start_hour")); total=parse_float(request.form.get("total_hours"))
-        if total<=0: raise ValueError("Total Signed Hours must be greater than zero.")
+        # Signed total hours are optional. A machine can still be registered/active for daily use
+        # without a fixed hour limit. If a total is supplied, automatic closing is enabled.
+        if total < 0: raise ValueError("Total Signed Hours cannot be negative.")
         c.execute("INSERT INTO machine_assignments(machine_id,project_id,start_date,start_hour,total_signed_hours,hours_used,status,assigned_by,notes) VALUES(?,?,?,?,?,0,'ACTIVE',?,?)",(mid,pid,start_date,start_hour,total,current_user()["id"],request.form.get("notes","")))
         c.execute("UPDATE machines SET assignment_start_date=?,assignment_start_hour=?,assignment_end_date=NULL,assignment_end_hour=NULL,total_signed_hours=?,hours_used=0,lifecycle_status='ACTIVE',assignment_signed_by=?,assignment_ended_by=NULL,assignment_ended_at=NULL WHERE id=? AND project_id=?",(start_date,start_hour,total,current_user()["id"],mid,pid))
-        c.commit(); flash("✍️ Machine assignment signed successfully.","success")
+        c.commit(); flash("✍️ Machine registered successfully. Signed total hours are optional; automatic ending will apply when a signed total is provided.","success")
     except Exception as e:
         c.rollback(); flash("Could not sign machine assignment: "+str(e),"error")
     finally: c.close()
@@ -676,8 +678,7 @@ def machinery(pid):
             used=parse_float(request.form.get("work_hours"))+parse_float(request.form.get("idle_hours"))+parse_float(request.form.get("down_hours"))
             ma=c.execute("SELECT id,total_signed_hours,hours_used FROM machine_assignments WHERE machine_id=? AND project_id=? AND status='ACTIVE' ORDER BY id DESC LIMIT 1",(request.form['machine_id'],pid)).fetchone()
             if ma:
-                new_used=(ma['hours_used'] or 0)+used; c.execute("UPDATE machine_assignments SET status=CASE WHEN total_signed_hours>0 AND ?>=total_signed_hours THEN 'ENDED' ELSE status END,end_date=CASE WHEN total_signed_hours>0 AND ?>=total_signed_hours THEN ? ELSE end_date END,end_hour=CASE WHEN total_signed_hours>0 AND ?>=total_signed_hours THEN ? ELSE end_hour END WHERE id=?",(new_used,new_used,request.form['date'],parse_float(request.form.get('closing_gauge')),ma['id']))
-                c.execute("UPDATE machines SET hours_used=?,lifecycle_status=CASE WHEN total_signed_hours>0 AND ?>=total_signed_hours THEN 'ENDED' ELSE lifecycle_status END,assignment_end_date=CASE WHEN total_signed_hours>0 AND ?>=total_signed_hours THEN ? ELSE assignment_end_date END WHERE id=?",(new_used,new_used,new_used,request.form['date'],request.form['machine_id']))
+                new_used=(ma['hours_used'] or 0)+used; reached=bool((ma['total_signed_hours'] or 0)>0 and new_used >= (ma['total_signed_hours'] or 0)); end_meter=(ma['total_signed_hours'] or 0) + (c.execute("SELECT start_hour FROM machine_assignments WHERE id=?",(ma['id'],)).fetchone()[0] or 0) if reached else None; c.execute("UPDATE machine_assignments SET hours_used=?,status=CASE WHEN ? THEN 'ENDED' ELSE status END,end_date=CASE WHEN ? THEN ? ELSE end_date END,end_hour=CASE WHEN ? THEN ? ELSE end_hour END WHERE id=?",(new_used,reached,reached,request.form['date'],reached,end_meter,ma['id'])); c.execute("UPDATE machines SET hours_used=?,lifecycle_status=CASE WHEN ? THEN 'ENDED' ELSE lifecycle_status END,assignment_end_date=CASE WHEN ? THEN ? ELSE assignment_end_date END,assignment_end_hour=CASE WHEN ? THEN ? ELSE assignment_end_hour END WHERE id=?",(new_used,reached,reached,request.form['date'],reached,end_meter,request.form['machine_id']))
             flash("⏱️ Machine hours / idle / down / gauge saved successfully.","success")
         try: c.commit()
         except Exception as e: c.rollback(); flash("Machinery save failed: "+str(e),"error")
