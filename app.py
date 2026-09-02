@@ -20,6 +20,7 @@ app=Flask(__name__)
 app.secret_key=os.environ.get("SECRET_KEY","bagc-change-this-secret")
 
 DEPARTMENTS=["Administration","Design","Machinery","Finance","HR","Store","Project"]
+UNIT_CATALOG=["m","m²","m³","mm","cm","kg","ton","litre","L","pcs","pc","no","set","lot","item","bag","roll","sheet","length","day","hour","hr","month","lump sum"]
 MACHINE_TYPES=["Dozer","Excavator","Wheel Loader","Backhoe Loader","Motor Grader","Roller","Dump Truck","Water Truck","Crane","Forklift","Concrete Mixer","Concrete Pump","Batching Plant","Crusher","Asphalt Plant","Asphalt Paver","Bitumen Distributor","Road Sweeper","Generator","Welding Machine","Vibrator","Air Compressor","Pickup","Other"]
 MATERIAL_CATEGORIES=["Common Construction","Earthworks","Concrete","Rebar","Structural Steel / RHS","Formwork","Masonry","Roofing","Waterproofing","Finishing","Tiles","Natural Stone","Sanitary","Plumbing","Drainage","Electrical","Low Voltage / ICT","Aluminium","Glass","Road Works","Culverts","Landscaping","Fuel & Oil","Lubricants","Spare Parts","Welding / Cutting","PPE / Safety","Stationery & Cleaning","Tools","Other"]
 MATERIAL_CATALOG=[
@@ -52,12 +53,6 @@ def db():
     c.row_factory=sqlite3.Row
     c.execute("PRAGMA busy_timeout=30000")
     c.execute("PRAGMA foreign_keys=ON")
-    try:
-        c.execute("PRAGMA journal_mode=WAL")
-        c.execute("PRAGMA synchronous=NORMAL")
-    except sqlite3.OperationalError:
-        # Keep working if an existing deployment temporarily cannot change journal mode.
-        pass
     return c
 
 
@@ -71,13 +66,18 @@ def init_db():
     if os.environ.get("RENDER") and not os.environ.get("BAGC_DATA_DIR"):
         app.logger.warning("BAGC_DATA_DIR is not set on Render. SQLite will be ephemeral; configure a persistent disk or external database for permanent users/reports/BOQ.")
     c=db()
+    try:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.OperationalError:
+        pass
     c.executescript('''
     CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,position TEXT,location TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,photo_filename TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,name TEXT UNIQUE,code TEXT,location TEXT,client TEXT,consultant TEXT,status TEXT DEFAULT 'Active',start_date TEXT,end_date TEXT);
     CREATE TABLE IF NOT EXISTS user_projects(user_id INTEGER,project_id INTEGER,UNIQUE(user_id,project_id));
     CREATE TABLE IF NOT EXISTS boq(id INTEGER PRIMARY KEY,project_id INTEGER,item_no TEXT,description TEXT,unit TEXT,rate REAL DEFAULT 0,contract_qty REAL DEFAULT 0,source_sheet TEXT,series TEXT DEFAULT '',title TEXT DEFAULT '',UNIQUE(project_id,item_no));
     CREATE TABLE IF NOT EXISTS boq_settings(id INTEGER PRIMARY KEY,project_id INTEGER UNIQUE,title TEXT DEFAULT '',revision TEXT DEFAULT '',effective_date TEXT);
-    CREATE TABLE IF NOT EXISTS daily_work(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,boq_id INTEGER,quantity REAL,station_from TEXT,station_to TEXT,notes TEXT,user_id INTEGER);
+    CREATE TABLE IF NOT EXISTS daily_work(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,boq_id INTEGER,quantity REAL,unit TEXT,station_from TEXT,station_to TEXT,notes TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS machines(id INTEGER PRIMARY KEY,project_id INTEGER,machine_type TEXT,code TEXT,ownership TEXT,hourly_rate REAL DEFAULT 0,expected_fuel REAL DEFAULT 0,active INTEGER DEFAULT 1);
     CREATE TABLE IF NOT EXISTS machine_logs(id INTEGER PRIMARY KEY,project_id INTEGER,machine_id INTEGER,date TEXT,work_hours REAL DEFAULT 0,idle_hours REAL DEFAULT 0,idle_reason TEXT,idle_payable INTEGER DEFAULT 0,down_hours REAL DEFAULT 0,down_reason TEXT,opening_gauge REAL DEFAULT 0,fuel_received REAL DEFAULT 0,closing_gauge REAL DEFAULT 0,notes TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS materials(id INTEGER PRIMARY KEY,project_id INTEGER,category TEXT,name TEXT,unit TEXT,min_stock REAL DEFAULT 0,active INTEGER DEFAULT 1,UNIQUE(project_id,name));
@@ -87,7 +87,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS finance_logs(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,category TEXT,kind TEXT,description TEXT,amount REAL DEFAULT 0,reference TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS boq_uploads(id INTEGER PRIMARY KEY,project_id INTEGER,filename TEXT,uploaded_at TEXT,user_id INTEGER,rows_imported INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS performance_rates(id INTEGER PRIMARY KEY,project_id INTEGER,work_type TEXT,worker_type TEXT,unit TEXT,qty_per_hour REAL DEFAULT 0,notes TEXT,UNIQUE(project_id,work_type,worker_type));
-    CREATE TABLE IF NOT EXISTS daily_activities(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,boq_id INTEGER,work_type TEXT,executed_qty REAL DEFAULT 0,machine_id INTEGER,machine_hours REAL DEFAULT 0,manpower_position TEXT,manpower_qty REAL DEFAULT 0,manpower_hours REAL DEFAULT 0,material_id INTEGER,material_qty REAL DEFAULT 0,remarks TEXT,user_id INTEGER);
+    CREATE TABLE IF NOT EXISTS daily_activities(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,boq_id INTEGER,work_type TEXT,executed_qty REAL DEFAULT 0,unit TEXT,machine_id INTEGER,machine_hours REAL DEFAULT 0,manpower_position TEXT,manpower_qty REAL DEFAULT 0,manpower_hours REAL DEFAULT 0,material_id INTEGER,material_qty REAL DEFAULT 0,remarks TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS problems(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,problem TEXT,remark TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS fuel_logs(id INTEGER PRIMARY KEY,project_id INTEGER,machine_id INTEGER,date TEXT,opening_gauge REAL DEFAULT 0,fuel_received REAL DEFAULT 0,closing_gauge REAL DEFAULT 0,fuel_price REAL DEFAULT 0,reference TEXT,notes TEXT,user_id INTEGER,source TEXT DEFAULT 'Fuel Register');
     CREATE TABLE IF NOT EXISTS project_crews(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,group_name TEXT,position TEXT,name TEXT,employment TEXT,skill_level TEXT,working_hours REAL DEFAULT 0,hourly_rate REAL DEFAULT 0,notes TEXT,user_id INTEGER);
@@ -120,6 +120,10 @@ def init_db():
     if 'photo_filename' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN photo_filename TEXT")
     for ur in c.execute("SELECT id,department,staff_id FROM users").fetchall():
         if not ur['staff_id'] or str(ur['staff_id']).startswith('BAGC-') and str(ur['staff_id'])[5:].isdigit(): c.execute("UPDATE users SET staff_id=? WHERE id=?",(make_staff_id(ur['department'],ur['id']),ur['id']))
+    existing_dw=[r['name'] for r in c.execute("PRAGMA table_info(daily_work)").fetchall()]
+    if 'unit' not in existing_dw: c.execute("ALTER TABLE daily_work ADD COLUMN unit TEXT")
+    existing_da=[r['name'] for r in c.execute("PRAGMA table_info(daily_activities)").fetchall()]
+    if 'unit' not in existing_da: c.execute("ALTER TABLE daily_activities ADD COLUMN unit TEXT")
     existing=[r['name'] for r in c.execute("PRAGMA table_info(machines)").fetchall()]
     for col,typ in [('plate_no','TEXT'),('engine_no','TEXT'),('fuel_price','REAL DEFAULT 0')]:
         if col not in existing: c.execute(f"ALTER TABLE machines ADD COLUMN {col} {typ}")
@@ -160,7 +164,7 @@ def current_user():
 
 @app.context_processor
 def inject():
-    return {"me":current_user(),"machine_types":MACHINE_TYPES,"material_categories":MATERIAL_CATEGORIES,"material_catalog":MATERIAL_CATALOG,"design_statuses":DESIGN_STATUSES,"today":dt.date.today().isoformat(),"crew_groups":CREW_GROUPS,"position_catalog":POSITION_CATALOG}
+    return {"me":current_user(),"machine_types":MACHINE_TYPES,"unit_catalog":UNIT_CATALOG,"material_categories":MATERIAL_CATEGORIES,"material_catalog":MATERIAL_CATALOG,"design_statuses":DESIGN_STATUSES,"today":dt.date.today().isoformat(),"crew_groups":CREW_GROUPS,"position_catalog":POSITION_CATALOG}
 
 
 def login_required(f):
@@ -314,9 +318,8 @@ def home():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    # Always initialize/synchronize the configured Super Admin before authentication.
-    # This makes a fresh Render deployment and a changed Render ENV behave the same.
-    init_db()
+    # Database/schema initialization is performed once at application startup.
+    # Re-running migrations on every login can create unnecessary SQLite write contention.
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
@@ -438,6 +441,7 @@ def daily(pid):
             store_data=request.form.getlist("wp_store_json[]")
             fuel_data=request.form.getlist("wp_fuel_json[]")
             finance_data=request.form.getlist("wp_finance_json[]")
+            units=request.form.getlist("wp_unit[]")
 
             # Backward-compatible fallback for a simple single row POST.
             row_count=len(boq_ids)
@@ -455,11 +459,19 @@ def daily(pid):
 
             def arr(items,i,default=""):
                 return items[i] if i < len(items) else default
-            def json_ids(items,i):
+            def json_alloc(items,i):
                 raw=arr(items,i,"[]")
                 try: value=_json.loads(raw) if raw else []
                 except Exception: value=[]
-                return [int(x) for x in value if str(x).strip().isdigit()]
+                out=[]
+                if isinstance(value,dict):
+                    for k,v in value.items():
+                        if str(k).strip().isdigit(): out.append((int(k), v if isinstance(v,dict) else {"qty":parse_float(v)}))
+                elif isinstance(value,list):
+                    for x in value:
+                        if isinstance(x,dict) and str(x.get("id","")).isdigit(): out.append((int(x["id"]),x))
+                        elif str(x).strip().isdigit(): out.append((int(x),{}))
+                return out
 
             saved=0
             for i in range(row_count):
@@ -468,23 +480,50 @@ def daily(pid):
                 bid=int(bid_s); qty=parse_float(arr(quantities,i))
                 if qty<=0: continue
                 # Variation warning is raised only when cumulative executed quantity exceeds BOQ quantity.
+                b=c.execute("SELECT unit FROM boq WHERE id=? AND project_id=?",(bid,pid)).fetchone()
+                selected_unit=arr(units,i,(b["unit"] if b else "")) or (b["unit"] if b else "")
                 msg=variation_check(c,pid,bid,qty,d)
-                c.execute("INSERT INTO daily_work(project_id,date,boq_id,quantity,station_from,station_to,notes,user_id) VALUES(?,?,?,?,?,?,?,?)",(pid,d,bid,qty,arr(station_froms,i),arr(station_tos,i),arr(remarks,i),u["id"]))
-                c.execute("INSERT INTO daily_activities(project_id,date,boq_id,work_type,executed_qty,machine_id,machine_hours,manpower_position,manpower_qty,manpower_hours,material_id,material_qty,remarks,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,d,bid,arr(work_types,i),qty,None,0,"",0,0,None,0,arr(remarks,i),u["id"]))
+                c.execute("INSERT INTO daily_work(project_id,date,boq_id,quantity,unit,station_from,station_to,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?)",(pid,d,bid,qty,selected_unit,arr(station_froms,i),arr(station_tos,i),arr(remarks,i),u["id"]))
+                c.execute("INSERT INTO daily_activities(project_id,date,boq_id,work_type,executed_qty,unit,machine_id,machine_hours,manpower_position,manpower_qty,manpower_hours,material_id,material_qty,remarks,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,d,bid,arr(work_types,i),qty,selected_unit,None,0,"",0,0,None,0,arr(remarks,i),u["id"]))
                 aid=c.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-                for lid in json_ids(machine_data,i):
-                    c.execute("INSERT INTO activity_machines(activity_id,machine_log_id,machine_id,hours) SELECT ?,id,machine_id,work_hours+idle_hours+down_hours FROM machine_logs WHERE id=? AND project_id=?",(aid,lid,pid))
-                for mid in json_ids(manpower_data,i):
-                    c.execute("INSERT INTO activity_manpower(activity_id,manpower_id,crew_id,qty,hours) SELECT ?,id,crew_id,present,working_hours FROM manpower WHERE id=? AND project_id=?",(aid,mid,pid))
-                for cid in json_ids(crew_data,i):
+                for lid,meta in json_alloc(machine_data,i):
+                    rec=c.execute("SELECT work_hours,idle_hours,down_hours FROM machine_logs WHERE id=? AND project_id=?",(lid,pid)).fetchone()
+                    if not rec: continue
+                    hours=parse_float(meta.get("hours")) if isinstance(meta,dict) else 0
+                    max_hours=parse_float(rec["work_hours"])+parse_float(rec["idle_hours"])+parse_float(rec["down_hours"])
+                    prior=c.execute("SELECT COALESCE(SUM(hours),0) x FROM activity_machines WHERE machine_log_id=?",(lid,)).fetchone()["x"]
+                    if hours<0 or prior+hours>max_hours+0.0001: raise ValueError(f"Machinery allocation exceeds available hours for machine log {lid}. Available remaining: {max_hours-prior:.2f} h.")
+                    c.execute("INSERT INTO activity_machines(activity_id,machine_log_id,machine_id,hours) SELECT ?,id,machine_id,? FROM machine_logs WHERE id=? AND project_id=?",(aid,hours,lid,pid))
+                for mid,meta in json_alloc(manpower_data,i):
+                    q=parse_float(meta.get("qty")) if isinstance(meta,dict) else 0; hrs=parse_float(meta.get("hours")) if isinstance(meta,dict) else 0
+                    rec=c.execute("SELECT present,working_hours FROM manpower WHERE id=? AND project_id=?",(mid,pid)).fetchone()
+                    if not rec: continue
+                    if q<0 or hrs<0 or q>parse_float(rec["present"])+0.0001 or hrs>parse_float(rec["working_hours"])+0.0001: raise ValueError(f"Manpower allocation exceeds the selected attendance record for ID {mid}.")
+                    c.execute("INSERT INTO activity_manpower(activity_id,manpower_id,crew_id,qty,hours) SELECT ?,id,crew_id,?,? FROM manpower WHERE id=? AND project_id=?",(aid,q,hrs,mid,pid))
+                for cid,meta in json_alloc(crew_data,i):
                     c.execute("INSERT INTO crew_evaluations(activity_id,crew_id,evaluation,remarks,score) SELECT ?,id,?,?,? FROM project_crews WHERE id=? AND project_id=?",(aid,arr(evaluations,i),arr(eval_remarks,i),parse_float(arr(scores,i)),cid,pid))
-                for sid in json_ids(store_data,i):
-                    c.execute("INSERT INTO activity_store(activity_id,store_log_id,material_id,qty) SELECT ?,id,material_id,issued FROM store_logs WHERE id=? AND project_id=?",(aid,sid,pid))
-                for fid in json_ids(fuel_data,i):
-                    c.execute("INSERT INTO activity_fuel(activity_id,fuel_log_id,litres) SELECT ?,id,opening_gauge+fuel_received-closing_gauge FROM fuel_logs WHERE id=? AND project_id=?",(aid,fid,pid))
-                for xid in json_ids(finance_data,i):
-                    c.execute("INSERT INTO activity_finance(activity_id,finance_log_id,amount) SELECT ?,id,amount FROM finance_logs WHERE id=? AND project_id=?",(aid,xid,pid))
+                for sid,meta in json_alloc(store_data,i):
+                    q=parse_float(meta.get("qty")) if isinstance(meta,dict) else 0
+                    rec=c.execute("SELECT issued FROM store_logs WHERE id=? AND project_id=?",(sid,pid)).fetchone()
+                    if not rec: continue
+                    prior=c.execute("SELECT COALESCE(SUM(qty),0) x FROM activity_store WHERE store_log_id=?",(sid,)).fetchone()["x"]
+                    if q<0 or prior+q>parse_float(rec["issued"])+0.0001: raise ValueError(f"Store allocation exceeds the issued quantity for store record {sid}. Remaining: {parse_float(rec['issued'])-prior:.3f}.")
+                    c.execute("INSERT INTO activity_store(activity_id,store_log_id,material_id,qty) SELECT ?,id,material_id,? FROM store_logs WHERE id=? AND project_id=?",(aid,q,sid,pid))
+                for fid,meta in json_alloc(fuel_data,i):
+                    q=parse_float(meta.get("litres")) if isinstance(meta,dict) else 0
+                    rec=c.execute("SELECT opening_gauge+fuel_received-closing_gauge actual FROM fuel_logs WHERE id=? AND project_id=?",(fid,pid)).fetchone()
+                    if not rec: continue
+                    prior=c.execute("SELECT COALESCE(SUM(litres),0) x FROM activity_fuel WHERE fuel_log_id=?",(fid,)).fetchone()["x"]
+                    if q<0 or prior+q>parse_float(rec["actual"])+0.0001: raise ValueError(f"Fuel allocation exceeds the actual fuel in record {fid}. Remaining: {parse_float(rec['actual'])-prior:.2f} L.")
+                    c.execute("INSERT INTO activity_fuel(activity_id,fuel_log_id,litres) SELECT ?,id,? FROM fuel_logs WHERE id=? AND project_id=?",(aid,q,fid,pid))
+                for xid,meta in json_alloc(finance_data,i):
+                    q=parse_float(meta.get("amount")) if isinstance(meta,dict) else 0
+                    rec=c.execute("SELECT amount FROM finance_logs WHERE id=? AND project_id=?",(xid,pid)).fetchone()
+                    if not rec: continue
+                    prior=c.execute("SELECT COALESCE(SUM(amount),0) x FROM activity_finance WHERE finance_log_id=?",(xid,)).fetchone()["x"]
+                    if q<0 or prior+q>parse_float(rec["amount"])+0.0001: raise ValueError(f"Finance allocation exceeds the amount in record {xid}. Remaining: {parse_float(rec['amount'])-prior:.2f}.")
+                    c.execute("INSERT INTO activity_finance(activity_id,finance_log_id,amount) SELECT ?,id,? FROM finance_logs WHERE id=? AND project_id=?",(aid,q,xid,pid))
                 if msg: flash("🚨 "+msg,"error")
                 saved+=1
 
@@ -494,6 +533,8 @@ def daily(pid):
             # Commit the work/resources first. Do NOT open a second SQLite connection while
             # this write transaction is still open; that was a major cause of database-lock errors.
             c.commit()
+            # Release this request's SQLite connection before the snapshot service writes.
+            c.close(); c=None
             # Then create/update the permanent Daily snapshot using the normal report service.
             try:
                 save_report(pid,"DAILY",dt.date.fromisoformat(d),dt.date.fromisoformat(d),"ALL",u["id"])
@@ -501,16 +542,19 @@ def daily(pid):
                 app.logger.exception("Daily snapshot failed after successful work save: %s", snapshot_error)
                 flash("⚠️ Daily work was saved, but the archive snapshot could not be refreshed: "+str(snapshot_error),"error")
             flash(f"✅ Daily Report saved once: {saved} BOQ work package(s) with all selected machinery, manpower, crews, store, fuel and finance linked.","success")
+            c=db()
+        if c is None: c=db()
         boq=c.execute("SELECT * FROM boq WHERE project_id=? ORDER BY series,item_no,id",(pid,)).fetchall()
-        linked_machines=c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.ownership FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? AND ml.date=? ORDER BY m.machine_type,m.code",(pid,default_date)).fetchall()
-        linked_manpower=c.execute("SELECT mp.*,pc.group_name,pc.position crew_position,pc.name crew_name FROM manpower mp LEFT JOIN project_crews pc ON pc.id=mp.crew_id WHERE mp.project_id=? AND mp.date=? ORDER BY pc.group_name,mp.position,mp.name",(pid,default_date)).fetchall()
-        linked_fuel=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? AND f.date=? ORDER BY m.machine_type,m.code,f.id",(pid,default_date)).fetchall()
-        linked_store=c.execute("SELECT sl.*,m.name,m.unit FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? AND sl.date=? ORDER BY m.name",(pid,default_date)).fetchall()
-        linked_finance=c.execute("SELECT * FROM finance_logs WHERE project_id=? AND date=? ORDER BY id",(pid,default_date)).fetchall()
+        units=sorted(set(UNIT_CATALOG) | {str(r["unit"]).strip() for r in boq if r["unit"]})
+        linked_machines=c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.ownership,(ml.work_hours+ml.idle_hours+ml.down_hours-COALESCE((SELECT SUM(am.hours) FROM activity_machines am WHERE am.machine_log_id=ml.id),0)) remaining_hours FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? AND ml.date=? ORDER BY m.machine_type,m.code",(pid,default_date)).fetchall()
+        linked_manpower=c.execute("SELECT mp.*,pc.group_name,pc.position crew_position,pc.name crew_name,MAX(0,mp.present-COALESCE((SELECT SUM(ap.qty) FROM activity_manpower ap WHERE ap.manpower_id=mp.id),0)) remaining_qty,MAX(0,mp.working_hours-COALESCE((SELECT SUM(ap.hours) FROM activity_manpower ap WHERE ap.manpower_id=mp.id),0)) remaining_hours FROM manpower mp LEFT JOIN project_crews pc ON pc.id=mp.crew_id WHERE mp.project_id=? AND mp.date=? ORDER BY pc.group_name,mp.position,mp.name",(pid,default_date)).fetchall()
+        linked_fuel=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,MAX(0,(f.opening_gauge+f.fuel_received-f.closing_gauge)-COALESCE((SELECT SUM(af.litres) FROM activity_fuel af WHERE af.fuel_log_id=f.id),0)) remaining_litres FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? AND f.date=? ORDER BY m.machine_type,m.code,f.id",(pid,default_date)).fetchall()
+        linked_store=c.execute("SELECT sl.*,m.name,m.unit,MAX(0,sl.issued-COALESCE((SELECT SUM(ast.qty) FROM activity_store ast WHERE ast.store_log_id=sl.id),0)) remaining_qty FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? AND sl.date=? ORDER BY m.name",(pid,default_date)).fetchall()
+        linked_finance=c.execute("SELECT fl.*,MAX(0,fl.amount-COALESCE((SELECT SUM(af.amount) FROM activity_finance af WHERE af.finance_log_id=fl.id),0)) remaining_amount FROM finance_logs fl WHERE fl.project_id=? AND fl.date=? ORDER BY fl.id",(pid,default_date)).fetchall()
         crews=c.execute("SELECT * FROM project_crews WHERE project_id=? ORDER BY group_name,position,name",(pid,)).fetchall()
         alerts=c.execute("SELECT va.*,b.item_no,b.description FROM variation_alerts va JOIN boq b ON b.id=va.boq_id WHERE va.project_id=? ORDER BY va.id DESC LIMIT 30",(pid,)).fetchall()
         recent=c.execute("SELECT dw.*,b.item_no,b.description,b.unit,b.rate,b.series,(dw.quantity*b.rate) amount FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=? ORDER BY dw.date DESC,dw.id DESC LIMIT 50",(pid,)).fetchall()
-        return render_template("daily.html",pid=pid,date=default_date,boq=boq,linked_machines=linked_machines,linked_manpower=linked_manpower,linked_fuel=linked_fuel,linked_store=linked_store,linked_finance=linked_finance,crews=crews,alerts=alerts,recent=recent)
+        return render_template("daily.html",pid=pid,date=default_date,boq=boq,units=units,linked_machines=linked_machines,linked_manpower=linked_manpower,linked_fuel=linked_fuel,linked_store=linked_store,linked_finance=linked_finance,crews=crews,alerts=alerts,recent=recent)
     except Exception as e:
         try: c.rollback()
         except Exception: pass
@@ -570,6 +614,45 @@ def print_report(pid):
     machines=c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.ownership FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? AND ml.date=?",(pid,date)).fetchall()
     manpower=c.execute("SELECT * FROM manpower WHERE project_id=? AND date=?",(pid,date)).fetchall(); store=c.execute("SELECT sl.*,m.name,m.unit FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? AND sl.date=?",(pid,date)).fetchall(); problems=c.execute("SELECT * FROM problems WHERE project_id=? AND date=?",(pid,date)).fetchall(); c.close()
     return render_template("print_report.html",p=p,settings=settings,date=date,boq=boq,activities=activities,activity_links=activity_links,machines=machines,manpower=manpower,store=store,problems=problems)
+
+@app.route("/projects/<int:pid>/machinery/assign", methods=["POST"])
+@login_required
+def assign_machine(pid):
+    if not allowed_project(pid) or not can_module("Machinery"):
+        flash("🚫 Machinery access is not assigned.", "error"); return redirect(url_for("project", pid=pid))
+    c=db()
+    try:
+        mid=int(request.form.get("machine_id")); m=c.execute("SELECT * FROM machines WHERE id=? AND project_id=? AND active=1",(mid,pid)).fetchone()
+        if not m: raise ValueError("Machine not found in this project fleet.")
+        active=c.execute("SELECT id FROM machine_assignments WHERE machine_id=? AND project_id=? AND status='ACTIVE'",(mid,pid)).fetchone()
+        if active: raise ValueError("This machine already has an active signed assignment.")
+        start_date=request.form.get("start_date") or dt.date.today().isoformat(); start_hour=parse_float(request.form.get("start_hour")); total=parse_float(request.form.get("total_hours"))
+        if total<=0: raise ValueError("Total Signed Hours must be greater than zero.")
+        c.execute("INSERT INTO machine_assignments(machine_id,project_id,start_date,start_hour,total_signed_hours,hours_used,status,assigned_by,notes) VALUES(?,?,?,?,?,0,'ACTIVE',?,?)",(mid,pid,start_date,start_hour,total,current_user()["id"],request.form.get("notes","")))
+        c.execute("UPDATE machines SET assignment_start_date=?,assignment_start_hour=?,assignment_end_date=NULL,assignment_end_hour=NULL,total_signed_hours=?,hours_used=0,lifecycle_status='ACTIVE',assignment_signed_by=?,assignment_ended_by=NULL,assignment_ended_at=NULL WHERE id=? AND project_id=?",(start_date,start_hour,total,current_user()["id"],mid,pid))
+        c.commit(); flash("✍️ Machine assignment signed successfully.","success")
+    except Exception as e:
+        c.rollback(); flash("Could not sign machine assignment: "+str(e),"error")
+    finally: c.close()
+    return redirect(url_for("machinery",pid=pid))
+
+@app.route("/projects/<int:pid>/machinery/end-assignment", methods=["POST"])
+@login_required
+def end_machine_assignment(pid):
+    if not allowed_project(pid) or not can_module("Machinery"):
+        flash("🚫 Machinery access is not assigned.", "error"); return redirect(url_for("project", pid=pid))
+    c=db()
+    try:
+        mid=int(request.form.get("machine_id")); a=c.execute("SELECT * FROM machine_assignments WHERE machine_id=? AND project_id=? AND status='ACTIVE' ORDER BY id DESC LIMIT 1",(mid,pid)).fetchone()
+        if not a: raise ValueError("No active assignment exists for this machine.")
+        end_date=request.form.get("end_date") or dt.date.today().isoformat(); end_hour=parse_float(request.form.get("end_hour"))
+        c.execute("UPDATE machine_assignments SET status='ENDED',end_date=?,end_hour=?,ended_by=?,ended_at=CURRENT_TIMESTAMP WHERE id=?",(end_date,end_hour,current_user()["id"],a["id"]))
+        c.execute("UPDATE machines SET lifecycle_status='ENDED',assignment_end_date=?,assignment_end_hour=?,assignment_ended_by=?,assignment_ended_at=CURRENT_TIMESTAMP WHERE id=? AND project_id=?",(end_date,end_hour,current_user()["id"],mid,pid))
+        c.commit(); flash("🛑 Assignment ended. A new signed assignment is required before logging this machine again.","success")
+    except Exception as e:
+        c.rollback(); flash("Could not end machine assignment: "+str(e),"error")
+    finally: c.close()
+    return redirect(url_for("machinery",pid=pid))
 
 @app.route("/projects/<int:pid>/machinery",methods=["GET","POST"])
 @login_required

@@ -30,18 +30,18 @@
     <div class="wp-row" data-index="0" style="margin-top:18px;padding:18px;border:1px solid #d8dee8;border-radius:14px;background:rgba(255,255,255,.03)">
       <div style="display:flex;justify-content:space-between"><h3>Work Package 1</h3><button type="button" class="btn small remove-package" style="display:none">Remove</button></div>
       <label>BOQ Item</label><select name="wp_boq_id[]" required><option value="">Select BOQ item</option>{% for b in boq %}<option value="{{b.id}}">{% if b.series %}[{{b.series}}] {% endif %}{{b.item_no}} — {{b.title or b.description}} ({{b.unit}})</option>{% endfor %}</select>
-      <div class="row"><div><label>Work Type</label><input name="wp_work_type[]" placeholder="Earthwork / Drainage / Structure" required></div><div><label>Executed Quantity</label><input name="wp_qty[]" type="number" step="0.001" min="0" required></div><div><label>From Station</label><input name="wp_station_from[]"></div><div><label>To Station</label><input name="wp_station_to[]"></div></div>
+      <div class="row"><div><label>Work Type</label><input name="wp_work_type[]" placeholder="Earthwork / Drainage / Structure" required></div><div><label>Executed Quantity</label><input name="wp_qty[]" type="number" step="0.001" min="0" required></div><div><label>Unit</label><select name="wp_unit[]" class="unit-select">{% for unit in units %}<option>{{unit}}</option>{% endfor %}</select></div><div><label>From Station</label><input name="wp_station_from[]"></div><div><label>To Station</label><input name="wp_station_to[]"></div></div>
       <div class="row">
-        <div style="min-width:48%"><label>🚜 Machinery — select all used for this BOQ item</label><select class="machine-select" multiple size="6">{% for x in linked_machines %}<option value="{{x.id}}">{{x.machine_type}} · {{x.code}} — {{x.work_hours}}h</option>{% endfor %}</select><input type="hidden" name="wp_machine_json[]" value="[]"></div>
-        <div style="min-width:48%"><label>👷 Manpower — select all used</label><select class="manpower-select" multiple size="6">{% for x in linked_manpower %}<option value="{{x.id}}">{{x.name}} — {{x.position}}{% if x.crew_name %} · {{x.crew_name}}{% endif %} — {{x.present}} × {{x.working_hours}}h</option>{% endfor %}</select><input type="hidden" name="wp_manpower_json[]" value="[]"></div>
+        <div style="min-width:48%"><label>🚜 Machinery — select only machinery used for THIS BOQ item</label><select class="machine-select" multiple size="6">{% for x in linked_machines %}<option value="{{x.id}}" data-default="{{x.remaining_hours}}">{{x.machine_type}} · {{x.code}} — {{x.remaining_hours}}h remaining</option>{% endfor %}</select><input type="hidden" name="wp_machine_json[]" value="[]"><div class="allocation machine-allocation"></div></div>
+        <div style="min-width:48%"><label>👷 Manpower — select only manpower used for THIS BOQ item</label><select class="manpower-select" multiple size="6">{% for x in linked_manpower %}<option value="{{x.id}}" data-default-qty="{{x.remaining_qty}}" data-default-hours="{{x.remaining_hours}}">{{x.name}} — {{x.position}}{% if x.crew_name %} · {{x.crew_name}}{% endif %} — {{x.remaining_qty}} × {{x.remaining_hours}}h remaining</option>{% endfor %}</select><input type="hidden" name="wp_manpower_json[]" value="[]"><div class="allocation manpower-allocation"></div></div>
       </div>
       <div class="row">
-        <div style="min-width:48%"><label>👥 Crew Members — select all involved</label><select class="crew-select" multiple size="6">{% for x in crews %}<option value="{{x.id}}">{{x.group_name}} · {{x.position}} · {{x.name}}</option>{% endfor %}</select><input type="hidden" name="wp_crew_json[]" value="[]"></div>
-        <div style="min-width:48%"><label>📦 Store — select material movements used</label><select class="store-select" multiple size="6">{% for x in linked_store %}<option value="{{x.id}}">{{x.name}} — issued {{x.issued}} {{x.unit}}</option>{% endfor %}</select><input type="hidden" name="wp_store_json[]" value="[]"></div>
+        <div style="min-width:48%"><label>👥 Crew Members — select all involved in THIS BOQ item</label><select class="crew-select" multiple size="6">{% for x in crews %}<option value="{{x.id}}">{{x.group_name}} · {{x.position}} · {{x.name}}</option>{% endfor %}</select><input type="hidden" name="wp_crew_json[]" value="[]"></div>
+        <div style="min-width:48%"><label>📦 Store — select material movement, then allocate quantity used by THIS BOQ item</label><select class="store-select" multiple size="6">{% for x in linked_store %}<option value="{{x.id}}" data-default="{{x.remaining_qty}}">{{x.name}} — remaining {{x.remaining_qty}} {{x.unit}}</option>{% endfor %}</select><input type="hidden" name="wp_store_json[]" value="[]"><div class="allocation store-allocation"></div></div>
       </div>
       <div class="row">
-        <div style="min-width:48%"><label>⛽ Fuel — select fuel records used</label><select class="fuel-select" multiple size="5">{% for x in linked_fuel %}<option value="{{x.id}}">{{x.machine_type}} · {{x.code}} — {{x.opening_gauge+x.fuel_received-x.closing_gauge}} L</option>{% endfor %}</select><input type="hidden" name="wp_fuel_json[]" value="[]"></div>
-        <div style="min-width:48%"><label>💰 Expense / Income — select records used</label><select class="finance-select" multiple size="5">{% for x in linked_finance %}<option value="{{x.id}}">{{x.kind}} — ETB {{'{:,.2f}'.format(x.amount)}} — {{x.description}}</option>{% endfor %}</select><input type="hidden" name="wp_finance_json[]" value="[]"></div>
+        <div style="min-width:48%"><label>⛽ Fuel — select fuel record, then allocate litres used by THIS BOQ item</label><select class="fuel-select" multiple size="5">{% for x in linked_fuel %}<option value="{{x.id}}" data-default="{{x.remaining_litres}}">{{x.machine_type}} · {{x.code}} — remaining {{x.remaining_litres}} L</option>{% endfor %}</select><input type="hidden" name="wp_fuel_json[]" value="[]"><div class="allocation fuel-allocation"></div></div>
+        <div style="min-width:48%"><label>💰 Expense / Income — select records used by THIS BOQ item</label><select class="finance-select" multiple size="5">{% for x in linked_finance %}<option value="{{x.id}}" data-default="{{x.remaining_amount}}">{{x.kind}} — remaining ETB {{'{:,.2f}'.format(x.remaining_amount)}} — {{x.description}}</option>{% endfor %}</select><input type="hidden" name="wp_finance_json[]" value="[]"><div class="allocation finance-allocation"></div></div>
       </div>
       <div class="row"><div><label>Crew Evaluation</label><select name="wp_evaluation[]"><option value="">Not yet evaluated</option><option>Excellent</option><option>Good</option><option>Satisfactory</option><option>Needs Improvement</option><option>Poor</option></select></div><div><label>Score (0–100)</label><input name="wp_score[]" type="number" step="1" min="0" max="100"></div></div>
       <label>Evaluation / Remarks</label><textarea name="wp_evaluation_remarks[]" placeholder="Productivity, quality, safety, attendance, coordination..."></textarea>
@@ -59,28 +59,51 @@
 
 <script>
 (function(){
-  const packages=document.getElementById('packages');
-  const add=document.getElementById('add-package');
-  const form=document.getElementById('daily-all-form');
-  let count=1;
-  function syncRow(row){
-    const pairs=[['machine-select','wp_machine_json[]'],['manpower-select','wp_manpower_json[]'],['crew-select','wp_crew_json[]'],['store-select','wp_store_json[]'],['fuel-select','wp_fuel_json[]'],['finance-select','wp_finance_json[]']];
-    pairs.forEach(([cls,name])=>{const sel=row.querySelector('.'+cls); const hid=row.querySelector('input[name="'+name+'"]'); if(sel&&hid) hid.value=JSON.stringify(Array.from(sel.selectedOptions).map(o=>o.value));});
+  const packages=document.getElementById('packages'); const add=document.getElementById('add-package'); const form=document.getElementById('daily-all-form');
+  const configs={
+    machine:['machine-select','wp_machine_json[]','machine-allocation','hours','Hours'],
+    manpower:['manpower-select','wp_manpower_json[]','manpower-allocation','qty','Qty'],
+    store:['store-select','wp_store_json[]','store-allocation','qty','Qty'],
+    fuel:['fuel-select','wp_fuel_json[]','fuel-allocation','litres','Litres'],
+    finance:['finance-select','wp_finance_json[]','finance-allocation','amount','Amount']
+  };
+  function hidden(row,name){return row.querySelector('input[name="'+name+'"]')}
+  function sync(row){
+    Object.values(configs).forEach(cfg=>{
+      const sel=row.querySelector('.'+cfg[0]), hid=hidden(row,cfg[1]); if(!sel||!hid)return;
+      const data=[]; row.querySelectorAll('.'+cfg[2]+' .allocation-row').forEach(r=>{const id=r.dataset.id, inputs=r.querySelectorAll('input'); const obj={id:id}; inputs.forEach(i=>obj[i.name]=i.value); data.push(obj)});
+      hid.value=JSON.stringify(data);
+    });
+    const crew=row.querySelector('.crew-select'), ch=hidden(row,'wp_crew_json[]'); if(crew&&ch) ch.value=JSON.stringify(Array.from(crew.selectedOptions).map(o=>o.value));
+  }
+  function renderAlloc(row,type){
+    const cfg=configs[type], sel=row.querySelector('.'+cfg[0]), box=row.querySelector('.'+cfg[2]); if(!sel||!box)return;
+    box.innerHTML=''; Array.from(sel.selectedOptions).forEach(o=>{
+      const r=document.createElement('div'); r.className='allocation-row'; r.dataset.id=o.value;
+      const label=document.createElement('span'); label.textContent=o.textContent.split('—')[0].trim();
+      if(type==='manpower'){
+        r.innerHTML='<span>'+label.textContent+'</span><label>Qty <input type="number" step="0.01" min="0" name="qty" value="'+(o.dataset.defaultQty||0)+'"></label><label>Hrs <input type="number" step="0.1" min="0" name="hours" value="'+(o.dataset.defaultHours||0)+'"></label>';
+      } else {
+        r.innerHTML='<span>'+label.textContent+'</span><label>'+cfg[4]+' <input type="number" step="0.01" min="0" name="'+cfg[3]+'" value="'+(o.dataset.default||0)+'"></label>';
+      }
+      box.appendChild(r); r.querySelectorAll('input').forEach(i=>i.addEventListener('input',()=>sync(row)));
+    }); sync(row);
+  }
+  function setUnit(row){
+    const boq=row.querySelector('select[name="wp_boq_id[]"]'), unit=row.querySelector('.unit-select'); if(!boq||!unit)return;
+    const txt=boq.selectedOptions[0]?.textContent||''; const m=txt.match(/\(([^()]*)\)\s*$/); if(m){const found=Array.from(unit.options).find(o=>o.value===m[1]); if(found)unit.value=m[1];}
   }
   function wire(row){
-    row.querySelectorAll('select[multiple]').forEach(s=>s.addEventListener('change',()=>syncRow(row)));
-    row.querySelector('.remove-package').addEventListener('click',()=>{row.remove();renumber();});
+    Object.keys(configs).forEach(type=>{const sel=row.querySelector('.'+configs[type][0]); if(sel)sel.addEventListener('change',()=>renderAlloc(row,type));});
+    const boq=row.querySelector('select[name="wp_boq_id[]"]'); if(boq)boq.addEventListener('change',()=>setUnit(row));
+    row.querySelector('.crew-select')?.addEventListener('change',()=>sync(row));
+    row.querySelector('.remove-package').addEventListener('click',()=>{row.remove();renumber()});
+    setUnit(row); Object.keys(configs).forEach(type=>renderAlloc(row,type));
   }
-  function renumber(){packages.querySelectorAll('.wp-row').forEach((r,i)=>{const h=r.querySelector('h3');if(h)h.textContent='Work Package '+(i+1);r.querySelector('.remove-package').style.display=packages.children.length>1?'inline-block':'none';});}
+  function renumber(){packages.querySelectorAll('.wp-row').forEach((r,i)=>{r.querySelector('h3').textContent='Work Package '+(i+1);r.querySelector('.remove-package').style.display=packages.children.length>1?'inline-block':'none'})}
   wire(packages.querySelector('.wp-row'));
-  add.addEventListener('click',()=>{
-    const base=packages.querySelector('.wp-row'); const row=base.cloneNode(true); count++;
-    row.querySelectorAll('select').forEach(s=>{s.selectedIndex=-1; if(!s.multiple)s.selectedIndex=0;});
-    row.querySelectorAll('input').forEach(i=>{if(i.type==='hidden')i.value='[]';else i.value='';});
-    row.querySelectorAll('textarea').forEach(t=>t.value='');
-    packages.appendChild(row); wire(row); renumber(); row.scrollIntoView({behavior:'smooth',block:'start'});
-  });
-  form.addEventListener('submit',()=>packages.querySelectorAll('.wp-row').forEach(syncRow));
+  add.addEventListener('click',()=>{const row=packages.querySelector('.wp-row').cloneNode(true); row.querySelectorAll('select').forEach(s=>{Array.from(s.options).forEach(o=>o.selected=false); if(!s.multiple)s.selectedIndex=0}); row.querySelectorAll('input').forEach(i=>{if(i.type==='hidden')i.value='[]';else i.value=''}); row.querySelectorAll('textarea').forEach(t=>t.value=''); row.querySelectorAll('.allocation').forEach(b=>b.innerHTML=''); packages.appendChild(row); wire(row); renumber(); row.scrollIntoView({behavior:'smooth',block:'start'})});
+  form.addEventListener('submit',()=>packages.querySelectorAll('.wp-row').forEach(sync));
 })();
 </script>
 {% endblock %}
