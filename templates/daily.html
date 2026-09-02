@@ -1,11 +1,86 @@
-{% extends "base.html" %}{% block content %}<div class="page-title"><div><div class="eyebrow">PROJECT DAILY REPORT</div><h1>📋 Daily Report — Office Engineer</h1><p>Only the assigned Office Engineer prepares the report. Machinery, manpower, fuel, store and finance staff register their own records; the Office Engineer links those records to each BOQ work package.</p></div><div><a class="btn" href="{{url_for('print_report',pid=pid)}}?date={{date}}">🖨️ Print Report</a> <a class="btn" href="{{url_for('project',pid=pid)}}">← Project</a></div></div>
+{% extends "base.html" %}
+{% block content %}
+<div class="page-title">
+  <div><div class="eyebrow">PROJECT DAILY REPORT</div><h1>📋 Daily Report — Office Engineer</h1>
+  <p>Prepare the complete report in one screen. Choose the BOQ work items and, for each item, select all machinery, manpower, crews, store, fuel and finance resources used. Press <b>Save Complete Daily Report</b> once.</p></div>
+  <div><a class="btn" href="{{url_for('print_report',pid=pid)}}?date={{date}}">🖨️ Print Report</a> <a class="btn" href="{{url_for('project',pid=pid)}}">← Project</a></div>
+</div>
+
 <section class="panel"><h2>📅 Report Date</h2><form method="get" class="row"><div><label>Date</label><input type="date" name="date" value="{{date}}" required></div><div style="align-self:end"><button class="btn primary">Load Date</button></div></form></section>
-<section class="panel"><h2>🔗 Resources Registered for {{date}}</h2><p>These records are automatically read from the department registers. Select several records when building one BOQ work package.</p><div class="three"><div><b>🚜 Machinery</b><p>{{linked_machines|length}} log(s)</p>{% for x in linked_machines[:6] %}<small>{{x.machine_type}} · {{x.code}} — {{x.work_hours}}h work / {{x.idle_hours}}h idle / {{x.down_hours}}h down</small><br>{% endfor %}</div><div><b>👷 Manpower</b><p>{{linked_manpower|length}} attendance record(s)</p>{% for x in linked_manpower[:6] %}<small>{{x.name}} — {{x.position}}{% if x.crew_name %} · {{x.crew_name}}{% endif %} — {{x.present}} × {{x.working_hours}}h</small><br>{% endfor %}</div><div><b>⛽ Fuel</b><p>{{linked_fuel|length}} fuel log(s)</p>{% for x in linked_fuel[:6] %}<small>{{x.machine_type}} · {{x.code}} — {{x.opening_gauge+x.fuel_received-x.closing_gauge}} L</small><br>{% endfor %}</div><div><b>📦 Store</b><p>{{linked_store|length}} movement(s)</p>{% for x in linked_store[:6] %}<small>{{x.name}} — issued {{x.issued}} {{x.unit}}</small><br>{% endfor %}</div><div><b>💰 Finance</b><p>{{linked_finance|length}} record(s)</p>{% for x in linked_finance[:6] %}<small>{{x.kind}} — ETB {{'{:,.2f}'.format(x.amount)}} — {{x.description}}</small><br>{% endfor %}</div></div></section>
-<section class="panel"><h2>🏗️ Register Work Package / Crew Evaluation</h2><p><b>Example:</b> Trench excavation → select the trench BOQ item, enter the executed quantity, then select 5 DL, 1 Foreman, 2 Data Collectors, 1 Time Keeper, 1 Excavator and the required dump trucks/loader, fuel, store and expenses. Repeat for the next BOQ item on the same date.</p><form method="post"><input type="hidden" name="section" value="activity"><input type="hidden" name="date" value="{{date}}"><label>BOQ Item</label><select name="boq_id" required><option value="">Select BOQ item</option>{% for b in boq %}<option value="{{b.id}}">{% if b.series %}[{{b.series}}] {% endif %}{{b.item_no}} — {{b.title or b.description}} ({{b.unit}})</option>{% endfor %}</select><div class="row"><div><label>Work Type</label><input name="work_type" placeholder="Earthwork / Drainage / Structure / etc." required></div><div><label>Executed Quantity</label><input name="executed_qty" type="number" step="0.001" required></div><div><label>From Station</label><input name="station_from"></div><div><label>To Station</label><input name="station_to"></div></div>
-<div class="row"><div style="min-width:45%"><label>🚜 Machinery Logs — select one or more</label><select name="machine_log_ids" multiple size="7" style="min-height:150px">{% for x in linked_machines %}<option value="{{x.id}}">{{x.machine_type}} · {{x.code}} — {{x.work_hours}}h</option>{% endfor %}</select></div><div style="min-width:45%"><label>👷 Manpower Logs — select one or more</label><select name="manpower_ids" multiple size="7" style="min-height:150px">{% for x in linked_manpower %}<option value="{{x.id}}">{{x.name}} — {{x.position}}{% if x.crew_name %} · {{x.crew_name}}{% endif %} — {{x.present}} × {{x.working_hours}}h</option>{% endfor %}</select></div></div>
-<div class="row"><div style="min-width:45%"><label>👥 Crew Members — select all involved</label><select name="crew_ids" multiple size="7" style="min-height:150px">{% for x in crews %}<option value="{{x.id}}">{{x.group_name}} · {{x.position}} · {{x.name}}</option>{% endfor %}</select></div><div style="min-width:45%"><label>📦 Store Logs — select one or more</label><select name="store_log_ids" multiple size="7" style="min-height:150px">{% for x in linked_store %}<option value="{{x.id}}">{{x.name}} — issued {{x.issued}} {{x.unit}}</option>{% endfor %}</select></div></div>
-<div class="row"><div style="min-width:45%"><label>⛽ Fuel Logs — select one or more</label><select name="fuel_log_ids" multiple size="6" style="min-height:130px">{% for x in linked_fuel %}<option value="{{x.id}}">{{x.machine_type}} · {{x.code}} — {{x.opening_gauge+x.fuel_received-x.closing_gauge}} L</option>{% endfor %}</select></div><div style="min-width:45%"><label>💰 Expense / Income Logs — select one or more</label><select name="finance_log_ids" multiple size="6" style="min-height:130px">{% for x in linked_finance %}<option value="{{x.id}}">{{x.kind}} — ETB {{'{:,.2f}'.format(x.amount)}} — {{x.description}}</option>{% endfor %}</select></div></div>
-<div class="row"><div><label>Crew Evaluation</label><select name="evaluation"><option value="">Not yet evaluated</option><option>Excellent</option><option>Good</option><option>Satisfactory</option><option>Needs Improvement</option><option>Poor</option></select></div><div><label>Score (0–100)</label><input name="score" type="number" step="1" min="0" max="100"></div></div><label>Evaluation / Remarks</label><textarea name="evaluation_remarks" placeholder="Productivity, quality, safety, attendance, coordination..."></textarea><label>Work Package Remarks</label><textarea name="remarks"></textarea><button>🏗️ Register Complete Work Package</button></form></section>
+
+<section class="panel">
+<h2>🔗 Resources Available for {{date}}</h2>
+<p>Department staff enter their records in their own modules. Here the Office Engineer only <b>selects the existing records</b> and links them to the correct BOQ work item. Nothing is re-entered.</p>
+<div class="three">
+<div><b>🚜 Machinery</b><p>{{linked_machines|length}} log(s)</p>{% for x in linked_machines[:5] %}<small>{{x.machine_type}} · {{x.code}} — {{x.work_hours}}h</small><br>{% endfor %}</div>
+<div><b>👷 Manpower</b><p>{{linked_manpower|length}} attendance record(s)</p>{% for x in linked_manpower[:5] %}<small>{{x.name}} — {{x.position}}{% if x.crew_name %} · {{x.crew_name}}{% endif %}</small><br>{% endfor %}</div>
+<div><b>⛽ Fuel</b><p>{{linked_fuel|length}} fuel log(s)</p>{% for x in linked_fuel[:5] %}<small>{{x.machine_type}} · {{x.code}} — {{x.opening_gauge+x.fuel_received-x.closing_gauge}} L</small><br>{% endfor %}</div>
+<div><b>📦 Store</b><p>{{linked_store|length}} movement(s)</p>{% for x in linked_store[:5] %}<small>{{x.name}} — issued {{x.issued}} {{x.unit}}</small><br>{% endfor %}</div>
+<div><b>💰 Finance</b><p>{{linked_finance|length}} record(s)</p>{% for x in linked_finance[:5] %}<small>{{x.kind}} — ETB {{'{:,.2f}'.format(x.amount)}} — {{x.description}}</small><br>{% endfor %}</div>
+</div></section>
+
+<form method="post" id="daily-all-form">
+<input type="hidden" name="action" value="save_daily"><input type="hidden" name="date" value="{{date}}">
+<section class="panel">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+    <div><h2 style="margin-bottom:4px">🏗️ BOQ Work Packages</h2><p style="margin:0">One daily report can contain <b>many BOQ items</b>. Example: Trench excavation, drainage, masonry, concrete, etc. Each row can use different resources.</p></div>
+    <button type="button" class="btn" id="add-package">＋ Add Another BOQ Work Item</button>
+  </div>
+  <div id="packages">
+    <div class="wp-row" data-index="0" style="margin-top:18px;padding:18px;border:1px solid #d8dee8;border-radius:14px;background:rgba(255,255,255,.03)">
+      <div style="display:flex;justify-content:space-between"><h3>Work Package 1</h3><button type="button" class="btn small remove-package" style="display:none">Remove</button></div>
+      <label>BOQ Item</label><select name="wp_boq_id[]" required><option value="">Select BOQ item</option>{% for b in boq %}<option value="{{b.id}}">{% if b.series %}[{{b.series}}] {% endif %}{{b.item_no}} — {{b.title or b.description}} ({{b.unit}})</option>{% endfor %}</select>
+      <div class="row"><div><label>Work Type</label><input name="wp_work_type[]" placeholder="Earthwork / Drainage / Structure" required></div><div><label>Executed Quantity</label><input name="wp_qty[]" type="number" step="0.001" min="0" required></div><div><label>From Station</label><input name="wp_station_from[]"></div><div><label>To Station</label><input name="wp_station_to[]"></div></div>
+      <div class="row">
+        <div style="min-width:48%"><label>🚜 Machinery — select all used for this BOQ item</label><select class="machine-select" multiple size="6">{% for x in linked_machines %}<option value="{{x.id}}">{{x.machine_type}} · {{x.code}} — {{x.work_hours}}h</option>{% endfor %}</select><input type="hidden" name="wp_machine_json[]" value="[]"></div>
+        <div style="min-width:48%"><label>👷 Manpower — select all used</label><select class="manpower-select" multiple size="6">{% for x in linked_manpower %}<option value="{{x.id}}">{{x.name}} — {{x.position}}{% if x.crew_name %} · {{x.crew_name}}{% endif %} — {{x.present}} × {{x.working_hours}}h</option>{% endfor %}</select><input type="hidden" name="wp_manpower_json[]" value="[]"></div>
+      </div>
+      <div class="row">
+        <div style="min-width:48%"><label>👥 Crew Members — select all involved</label><select class="crew-select" multiple size="6">{% for x in crews %}<option value="{{x.id}}">{{x.group_name}} · {{x.position}} · {{x.name}}</option>{% endfor %}</select><input type="hidden" name="wp_crew_json[]" value="[]"></div>
+        <div style="min-width:48%"><label>📦 Store — select material movements used</label><select class="store-select" multiple size="6">{% for x in linked_store %}<option value="{{x.id}}">{{x.name}} — issued {{x.issued}} {{x.unit}}</option>{% endfor %}</select><input type="hidden" name="wp_store_json[]" value="[]"></div>
+      </div>
+      <div class="row">
+        <div style="min-width:48%"><label>⛽ Fuel — select fuel records used</label><select class="fuel-select" multiple size="5">{% for x in linked_fuel %}<option value="{{x.id}}">{{x.machine_type}} · {{x.code}} — {{x.opening_gauge+x.fuel_received-x.closing_gauge}} L</option>{% endfor %}</select><input type="hidden" name="wp_fuel_json[]" value="[]"></div>
+        <div style="min-width:48%"><label>💰 Expense / Income — select records used</label><select class="finance-select" multiple size="5">{% for x in linked_finance %}<option value="{{x.id}}">{{x.kind}} — ETB {{'{:,.2f}'.format(x.amount)}} — {{x.description}}</option>{% endfor %}</select><input type="hidden" name="wp_finance_json[]" value="[]"></div>
+      </div>
+      <div class="row"><div><label>Crew Evaluation</label><select name="wp_evaluation[]"><option value="">Not yet evaluated</option><option>Excellent</option><option>Good</option><option>Satisfactory</option><option>Needs Improvement</option><option>Poor</option></select></div><div><label>Score (0–100)</label><input name="wp_score[]" type="number" step="1" min="0" max="100"></div></div>
+      <label>Evaluation / Remarks</label><textarea name="wp_evaluation_remarks[]" placeholder="Productivity, quality, safety, attendance, coordination..."></textarea>
+      <label>Work Package Remarks</label><textarea name="wp_remarks[]" placeholder="Describe location, method, progress and constraints..."></textarea>
+    </div>
+  </div>
+  <div style="margin-top:20px;padding:15px;border-radius:12px;background:rgba(0,120,255,.08)"><b>💾 One-save workflow:</b> all BOQ rows and their selected resources are submitted together in one database transaction. You do not need to save machinery, manpower, fuel or store again from this page.</div>
+  <button class="btn primary" type="submit" style="margin-top:18px">💾 Save Complete Daily Report</button>
+</section>
+</form>
+
 <section class="panel"><h2>🚨 BOQ Variation Alerts</h2>{% for a in alerts %}<div class="alert"><b>{{a.item_no}}</b> — {{a.message}} <small>({{a.date}})</small></div>{% else %}<p>No quantity has exceeded its BOQ contract quantity.</p>{% endfor %}</section>
-<section class="panel"><h2>💾 Daily Report Archive</h2><form method="post" action="{{url_for('save_report_route',pid=pid)}}" class="row"><input type="hidden" name="report_type" value="DAILY"><input type="hidden" name="scope" value="ALL"><div><label>From</label><input type="date" name="start" value="{{date}}" required></div><div><label>End</label><input type="date" name="end" value="{{date}}" required></div><div style="align-self:end"><button class="btn primary">💾 Save Daily Snapshot</button></div></form><p><a class="btn small" href="{{url_for('reports',pid=pid)}}?report_type=DAILY&scope=ALL&start={{date}}&end={{date}}">Open Saved Reports</a></p></section>
-<div class="table-card"><h2>📈 Recent BOQ Work</h2><table><tr><th>Date</th><th>Series</th><th>Item</th><th>Description</th><th>Qty</th><th>Income</th></tr>{% for r in recent %}<tr><td>{{r.date}}</td><td>{{r.series if r.series else '—'}}</td><td>{{r.item_no}}</td><td>{{r.description}}</td><td>{{r.quantity}} {{r.unit}}</td><td><b>ETB {{'{:,.2f}'.format(r.amount)}}</b></td></tr>{% endfor %}</table></div>{% endblock %}
+<section class="panel"><h2>📚 Daily Report Archive</h2><p>The complete Daily Report is automatically archived after the one-save transaction.</p><p><a class="btn small" href="{{url_for('reports',pid=pid)}}?report_type=DAILY&scope=ALL&start={{date}}&end={{date}}">Open Saved Reports</a></p></section>
+<div class="table-card"><h2>📈 Recent BOQ Work</h2><table><tr><th>Date</th><th>Series</th><th>Item</th><th>Description</th><th>Qty</th><th>Income</th></tr>{% for r in recent %}<tr><td>{{r.date}}</td><td>{{r.series if r.series else '—'}}</td><td>{{r.item_no}}</td><td>{{r.description}}</td><td>{{r.quantity}} {{r.unit}}</td><td><b>ETB {{'{:,.2f}'.format(r.amount)}}</b></td></tr>{% endfor %}</table></div>
+
+<script>
+(function(){
+  const packages=document.getElementById('packages');
+  const add=document.getElementById('add-package');
+  const form=document.getElementById('daily-all-form');
+  let count=1;
+  function syncRow(row){
+    const pairs=[['machine-select','wp_machine_json[]'],['manpower-select','wp_manpower_json[]'],['crew-select','wp_crew_json[]'],['store-select','wp_store_json[]'],['fuel-select','wp_fuel_json[]'],['finance-select','wp_finance_json[]']];
+    pairs.forEach(([cls,name])=>{const sel=row.querySelector('.'+cls); const hid=row.querySelector('input[name="'+name+'"]'); if(sel&&hid) hid.value=JSON.stringify(Array.from(sel.selectedOptions).map(o=>o.value));});
+  }
+  function wire(row){
+    row.querySelectorAll('select[multiple]').forEach(s=>s.addEventListener('change',()=>syncRow(row)));
+    row.querySelector('.remove-package').addEventListener('click',()=>{row.remove();renumber();});
+  }
+  function renumber(){packages.querySelectorAll('.wp-row').forEach((r,i)=>{const h=r.querySelector('h3');if(h)h.textContent='Work Package '+(i+1);r.querySelector('.remove-package').style.display=packages.children.length>1?'inline-block':'none';});}
+  wire(packages.querySelector('.wp-row'));
+  add.addEventListener('click',()=>{
+    const base=packages.querySelector('.wp-row'); const row=base.cloneNode(true); count++;
+    row.querySelectorAll('select').forEach(s=>{s.selectedIndex=-1; if(!s.multiple)s.selectedIndex=0;});
+    row.querySelectorAll('input').forEach(i=>{if(i.type==='hidden')i.value='[]';else i.value='';});
+    row.querySelectorAll('textarea').forEach(t=>t.value='');
+    packages.appendChild(row); wire(row); renumber(); row.scrollIntoView({behavior:'smooth',block:'start'});
+  });
+  form.addEventListener('submit',()=>packages.querySelectorAll('.wp-row').forEach(syncRow));
+})();
+</script>
+{% endblock %}
