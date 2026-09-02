@@ -50,16 +50,16 @@ def db():
 def init_db():
     c=db()
     c.executescript('''
-    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,location TEXT,role TEXT,active INTEGER DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,location TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,name TEXT UNIQUE,code TEXT,location TEXT,client TEXT,consultant TEXT,status TEXT DEFAULT 'Active',start_date TEXT,end_date TEXT);
     CREATE TABLE IF NOT EXISTS user_projects(user_id INTEGER,project_id INTEGER,UNIQUE(user_id,project_id));
     CREATE TABLE IF NOT EXISTS boq(id INTEGER PRIMARY KEY,project_id INTEGER,item_no TEXT,description TEXT,unit TEXT,rate REAL DEFAULT 0,contract_qty REAL DEFAULT 0,source_sheet TEXT,UNIQUE(project_id,item_no));
     CREATE TABLE IF NOT EXISTS daily_work(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,boq_id INTEGER,quantity REAL,station_from TEXT,station_to TEXT,notes TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS machines(id INTEGER PRIMARY KEY,project_id INTEGER,machine_type TEXT,code TEXT,ownership TEXT,hourly_rate REAL DEFAULT 0,expected_fuel REAL DEFAULT 0,active INTEGER DEFAULT 1);
-    CREATE TABLE IF NOT EXISTS machine_logs(id INTEGER PRIMARY KEY,project_id INTEGER,machine_id INTEGER,date TEXT,work_hours REAL DEFAULT 0,idle_hours REAL DEFAULT 0,idle_reason TEXT,down_hours REAL DEFAULT 0,down_reason TEXT,opening_gauge REAL DEFAULT 0,fuel_received REAL DEFAULT 0,closing_gauge REAL DEFAULT 0,notes TEXT,user_id INTEGER);
+    CREATE TABLE IF NOT EXISTS machine_logs(id INTEGER PRIMARY KEY,project_id INTEGER,machine_id INTEGER,date TEXT,work_hours REAL DEFAULT 0,idle_hours REAL DEFAULT 0,idle_reason TEXT,idle_payable INTEGER DEFAULT 0,down_hours REAL DEFAULT 0,down_reason TEXT,opening_gauge REAL DEFAULT 0,fuel_received REAL DEFAULT 0,closing_gauge REAL DEFAULT 0,notes TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS materials(id INTEGER PRIMARY KEY,project_id INTEGER,category TEXT,name TEXT,unit TEXT,min_stock REAL DEFAULT 0,active INTEGER DEFAULT 1,UNIQUE(project_id,name));
     CREATE TABLE IF NOT EXISTS store_logs(id INTEGER PRIMARY KEY,project_id INTEGER,material_id INTEGER,date TEXT,received REAL DEFAULT 0,issued REAL DEFAULT 0,unit_cost REAL DEFAULT 0,physical_balance REAL,reference TEXT,notes TEXT,user_id INTEGER);
-    CREATE TABLE IF NOT EXISTS manpower(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,name TEXT,employment TEXT,position TEXT,present REAL DEFAULT 1,daily_rate REAL DEFAULT 0,overtime_hours REAL DEFAULT 0,overtime_rate REAL DEFAULT 0,notes TEXT,user_id INTEGER);
+    CREATE TABLE IF NOT EXISTS manpower(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,name TEXT,employment TEXT,position TEXT,present REAL DEFAULT 1,working_hours REAL DEFAULT 8,hourly_rate REAL DEFAULT 0,daily_rate REAL DEFAULT 0,normal_ot_hours REAL DEFAULT 0,normal_ot_rate REAL DEFAULT 0,night_ot_hours REAL DEFAULT 0,night_ot_rate REAL DEFAULT 0,sunday_ot_hours REAL DEFAULT 0,sunday_ot_rate REAL DEFAULT 0,holiday_ot_hours REAL DEFAULT 0,holiday_ot_rate REAL DEFAULT 0,overtime_hours REAL DEFAULT 0,overtime_rate REAL DEFAULT 0,notes TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS design_items(id INTEGER PRIMARY KEY,project_id INTEGER,drawing_no TEXT,title TEXT,discipline TEXT,revision TEXT,status TEXT,submitted TEXT,approved TEXT,comments TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS finance_logs(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,category TEXT,kind TEXT,description TEXT,amount REAL DEFAULT 0,reference TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS boq_uploads(id INTEGER PRIMARY KEY,project_id INTEGER,filename TEXT,uploaded_at TEXT,user_id INTEGER,rows_imported INTEGER DEFAULT 0);
@@ -68,17 +68,26 @@ def init_db():
     CREATE TABLE IF NOT EXISTS problems(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,problem TEXT,remark TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS fuel_logs(id INTEGER PRIMARY KEY,project_id INTEGER,machine_id INTEGER,date TEXT,opening_gauge REAL DEFAULT 0,fuel_received REAL DEFAULT 0,closing_gauge REAL DEFAULT 0,fuel_price REAL DEFAULT 0,reference TEXT,notes TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS project_crews(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,group_name TEXT,position TEXT,name TEXT,employment TEXT,skill_level TEXT,working_hours REAL DEFAULT 0,hourly_rate REAL DEFAULT 0,notes TEXT,user_id INTEGER);
+    CREATE TABLE IF NOT EXISTS crew_groups(id INTEGER PRIMARY KEY,name TEXT UNIQUE,active INTEGER DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS crew_positions(id INTEGER PRIMARY KEY,name TEXT UNIQUE,active INTEGER DEFAULT 1);
     CREATE TABLE IF NOT EXISTS report_settings(id INTEGER PRIMARY KEY,project_id INTEGER UNIQUE,contractor_role TEXT DEFAULT 'Main Contractor',phone TEXT,email TEXT,website TEXT,fax TEXT,address TEXT,logo_text TEXT);
     CREATE TABLE IF NOT EXISTS rfis(id INTEGER PRIMARY KEY,project_id INTEGER,rfi_no TEXT,date_requested TEXT,inspection_date TEXT,location TEXT,boq_id INTEGER,work_description TEXT,drawing_no TEXT,drawing_revision TEXT,specification TEXT,work_stage TEXT,submitted_by INTEGER,status TEXT DEFAULT 'PENDING INSPECTION',overall_comment TEXT,corrective_action TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS rfi_inspections(id INTEGER PRIMARY KEY,rfi_id INTEGER,inspector_user_id INTEGER,inspector_role TEXT,decision TEXT DEFAULT 'PENDING',comments TEXT,inspection_date TEXT,signed_at TEXT,UNIQUE(rfi_id,inspector_user_id));
     ''')
     # Safe migrations for databases created by earlier BAGC versions.
+    existing_u=[r['name'] for r in c.execute("PRAGMA table_info(users)").fetchall()]
+    if 'staff_id' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN staff_id TEXT")
+    for ur in c.execute("SELECT id FROM users WHERE staff_id IS NULL OR staff_id=''").fetchall(): c.execute("UPDATE users SET staff_id=? WHERE id=?",(f'BAGC-{ur[0]:05d}',ur[0]))
     existing=[r['name'] for r in c.execute("PRAGMA table_info(machines)").fetchall()]
     for col,typ in [('plate_no','TEXT'),('engine_no','TEXT'),('fuel_price','REAL DEFAULT 0')]:
         if col not in existing: c.execute(f"ALTER TABLE machines ADD COLUMN {col} {typ}")
     existing_mp=[r['name'] for r in c.execute("PRAGMA table_info(manpower)").fetchall()]
-    for col,typ in [('working_hours','REAL DEFAULT 8'),('hourly_rate','REAL DEFAULT 0')]:
+    for col,typ in [('working_hours','REAL DEFAULT 8'),('hourly_rate','REAL DEFAULT 0'),('normal_ot_hours','REAL DEFAULT 0'),('normal_ot_rate','REAL DEFAULT 0'),('night_ot_hours','REAL DEFAULT 0'),('night_ot_rate','REAL DEFAULT 0'),('sunday_ot_hours','REAL DEFAULT 0'),('sunday_ot_rate','REAL DEFAULT 0'),('holiday_ot_hours','REAL DEFAULT 0'),('holiday_ot_rate','REAL DEFAULT 0'),('overtime_hours','REAL DEFAULT 0'),('overtime_rate','REAL DEFAULT 0')]:
         if col not in existing_mp: c.execute(f"ALTER TABLE manpower ADD COLUMN {col} {typ}")
+    existing_ml=[r['name'] for r in c.execute("PRAGMA table_info(machine_logs)").fetchall()]
+    if 'idle_payable' not in existing_ml: c.execute("ALTER TABLE machine_logs ADD COLUMN idle_payable INTEGER DEFAULT 0")
+    for g in CREW_GROUPS: c.execute("INSERT OR IGNORE INTO crew_groups(name) VALUES(?)",(g,))
+    for pos in POSITION_CATALOG: c.execute("INSERT OR IGNORE INTO crew_positions(name) VALUES(?)",(pos,))
     existing_p=[r['name'] for r in c.execute("PRAGMA table_info(projects)").fetchall()]
     for col,typ in [('contractor_role',"TEXT DEFAULT 'Main Contractor'"),('contract_sign_date','TEXT'),('commencement_date','TEXT'),('contract_end_date','TEXT'),('contract_days','INTEGER DEFAULT 0'),('planned_income','REAL DEFAULT 0'),('planned_physical_pct','REAL DEFAULT 0'),('contract_value','REAL DEFAULT 0')]:
         if col not in existing_p: c.execute(f"ALTER TABLE projects ADD COLUMN {col} {typ}")
@@ -92,6 +101,7 @@ def init_db():
         c.execute("UPDATE users SET username=?,password_hash=?,active=1,department='Administration',location='Head Office' WHERE id=?",(u,generate_password_hash(p),admin["id"]))
     if not c.execute("SELECT id FROM projects").fetchone():
         c.execute("INSERT INTO projects(name,code,location,status) VALUES(?,?,?,?)",("Koye Feche","KOYE","Koye Feche","Active"))
+    for ur in c.execute("SELECT id FROM users WHERE staff_id IS NULL OR staff_id=''").fetchall(): c.execute("UPDATE users SET staff_id=? WHERE id=?",(f'BAGC-{ur[0]:05d}',ur[0]))
     c.commit();c.close()
 
 
@@ -160,13 +170,13 @@ def dashboard_data(pid=None):
     for p in projects:
         inc=c.execute("SELECT COALESCE(SUM(dw.quantity*b.rate),0) x FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=?",(p["id"],)).fetchone()["x"]
         me=c.execute("SELECT COALESCE(SUM(ml.work_hours*m.hourly_rate),0) x FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=?",(p["id"],)).fetchone()["x"]
-        pe=c.execute("SELECT COALESCE(SUM(CASE WHEN mp.hourly_rate>0 THEN mp.present*mp.working_hours*mp.hourly_rate ELSE mp.present*mp.daily_rate END+mp.overtime_hours*mp.overtime_rate),0) x FROM manpower mp WHERE mp.project_id=?",(p["id"],)).fetchone()["x"]
+        pe=c.execute("SELECT COALESCE(SUM((CASE WHEN mp.hourly_rate>0 THEN mp.present*mp.working_hours*mp.hourly_rate ELSE mp.present*mp.daily_rate END + mp.normal_ot_hours*mp.normal_ot_rate + mp.night_ot_hours*mp.night_ot_rate + mp.sunday_ot_hours*mp.sunday_ot_rate + mp.holiday_ot_hours*mp.holiday_ot_rate)),0) x FROM manpower mp WHERE mp.project_id=?",(p["id"],)).fetchone()["x"]
         se=c.execute("SELECT COALESCE(SUM(sl.issued*sl.unit_cost),0) x FROM store_logs sl WHERE sl.project_id=?",(p["id"],)).fetchone()["x"]
         other=c.execute("SELECT COALESCE(SUM(amount),0) x FROM finance_logs WHERE project_id=? AND kind='Expense'",(p["id"],)).fetchone()["x"]
         workers=c.execute("SELECT COUNT(*) x FROM manpower WHERE project_id=? AND present>0",(p["id"],)).fetchone()["x"]
         machines=c.execute("SELECT COUNT(*) x FROM machines WHERE project_id=? AND active=1",(p["id"],)).fetchone()["x"]
         total_exp=money(me+pe+se+other)
-        daily_m=c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,(ml.work_hours*m.hourly_rate) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? ORDER BY ml.date DESC,ml.id DESC LIMIT 8",(p["id"],)).fetchall()
+        daily_m=c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,((ml.work_hours + CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? ORDER BY ml.date DESC,ml.id DESC LIMIT 8",(p["id"],)).fetchall()
         daily_mat=c.execute("SELECT sl.*,m.name,m.category,m.unit FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? ORDER BY sl.date DESC,sl.id DESC LIMIT 8",(p["id"],)).fetchall()
         fuel_recent=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,(f.opening_gauge+f.fuel_received-f.closing_gauge) consumption,(f.fuel_received*f.fuel_price) cost FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? ORDER BY f.date DESC,f.id DESC LIMIT 8",(p["id"],)).fetchall()
         contract_value=p["contract_value"] or c.execute("SELECT COALESCE(SUM(contract_qty*rate),0) FROM boq WHERE project_id=?",(p["id"],)).fetchone()[0]
@@ -240,8 +250,8 @@ def project(pid):
     machine_count=c.execute("SELECT COUNT(*) n FROM machines WHERE project_id=? AND active=1",(pid,)).fetchone()["n"]
     mat_count=c.execute("SELECT COUNT(*) n FROM materials WHERE project_id=? AND active=1",(pid,)).fetchone()["n"]
     actual_income=c.execute("SELECT COALESCE(SUM(dw.quantity*b.rate),0) x FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=?",(pid,)).fetchone()["x"]
-    actual_expense=c.execute("SELECT COALESCE(SUM(ml.work_hours*m.hourly_rate),0) FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=?",(pid,)).fetchone()[0]
-    actual_expense+=c.execute("SELECT COALESCE(SUM(CASE WHEN mp.hourly_rate>0 THEN mp.present*mp.working_hours*mp.hourly_rate ELSE mp.present*mp.daily_rate END+mp.overtime_hours*mp.overtime_rate),0) FROM manpower mp WHERE mp.project_id=?",(pid,)).fetchone()[0]
+    actual_expense=c.execute("SELECT COALESCE(SUM((ml.work_hours + CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate),0) FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=?",(pid,)).fetchone()[0]
+    actual_expense+=c.execute("SELECT COALESCE(SUM((CASE WHEN mp.hourly_rate>0 THEN mp.present*mp.working_hours*mp.hourly_rate ELSE mp.present*mp.daily_rate END + mp.normal_ot_hours*mp.normal_ot_rate + mp.night_ot_hours*mp.night_ot_rate + mp.sunday_ot_hours*mp.sunday_ot_rate + mp.holiday_ot_hours*mp.holiday_ot_rate)),0) FROM manpower mp WHERE mp.project_id=?",(pid,)).fetchone()[0]
     actual_expense+=c.execute("SELECT COALESCE(SUM(issued*unit_cost),0) FROM store_logs WHERE project_id=?",(pid,)).fetchone()[0]
     actual_expense+=c.execute("SELECT COALESCE(SUM(amount),0) FROM finance_logs WHERE project_id=? AND kind='Expense'",(pid,)).fetchone()[0]
     contract_value=p["contract_value"] or c.execute("SELECT COALESCE(SUM(contract_qty*rate),0) FROM boq WHERE project_id=?",(pid,)).fetchone()[0]
@@ -271,7 +281,7 @@ def daily(pid):
             mid=request.form["machine_id"];c.execute("INSERT INTO machine_logs(project_id,machine_id,date,work_hours,idle_hours,idle_reason,down_hours,down_reason,opening_gauge,fuel_received,closing_gauge,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(pid,mid,d,parse_float(request.form["work_hours"]),parse_float(request.form["idle_hours"]),request.form.get("idle_reason",""),parse_float(request.form["down_hours"]),request.form.get("down_reason",""),parse_float(request.form["opening_gauge"]),parse_float(request.form["fuel_received"]),parse_float(request.form["closing_gauge"]),request.form.get("notes",""),current_user()["id"]))
             flash("🚜 Machinery daily time saved.","success")
         elif request.form.get("section")=="manpower":
-            c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,working_hours,hourly_rate,daily_rate,overtime_hours,overtime_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,d,request.form["name"],request.form["employment"],request.form["position"],parse_float(request.form["present"]),parse_float(request.form.get("working_hours",8)),parse_float(request.form.get("hourly_rate")),parse_float(request.form["daily_rate"]),parse_float(request.form["overtime_hours"]),parse_float(request.form["overtime_rate"]),request.form.get("notes",""),current_user()["id"]))
+            c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,working_hours,hourly_rate,daily_rate,normal_ot_hours,normal_ot_rate,night_ot_hours,night_ot_rate,sunday_ot_hours,sunday_ot_rate,holiday_ot_hours,holiday_ot_rate,overtime_hours,overtime_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,d,request.form["name"],request.form["employment"],request.form["position"],parse_float(request.form.get("present")),parse_float(request.form.get("working_hours",8)),parse_float(request.form.get("hourly_rate")),parse_float(request.form.get("daily_rate")),parse_float(request.form.get("normal_ot_hours")),parse_float(request.form.get("normal_ot_rate")),parse_float(request.form.get("night_ot_hours")),parse_float(request.form.get("night_ot_rate")),parse_float(request.form.get("sunday_ot_hours")),parse_float(request.form.get("sunday_ot_rate")),parse_float(request.form.get("holiday_ot_hours")),parse_float(request.form.get("holiday_ot_rate")),0,0,request.form.get("notes",""),current_user()["id"]))
             flash("👷 Manpower daily attendance saved.","success")
         elif request.form.get("section")=="store":
             physical=request.form.get("physical_balance");physical=parse_float(physical) if physical not in (None,"") else None
@@ -298,10 +308,12 @@ def fuel(pid):
     if not allowed_project(pid) or not can_module("Machinery"): return redirect(url_for("project",pid=pid))
     c=db()
     if request.method=="POST":
-        c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?)",(pid,request.form["machine_id"],request.form["date"],parse_float(request.form["opening_gauge"]),parse_float(request.form["fuel_received"]),parse_float(request.form["closing_gauge"]),parse_float(request.form["fuel_price"]),request.form.get("reference",""),request.form.get("notes",""),current_user()["id"])); c.commit(); flash("⛽ Fuel log saved.","success")
+        c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?)",(pid,request.form["machine_id"],request.form["date"],parse_float(request.form.get("opening_gauge")),parse_float(request.form.get("fuel_received")),parse_float(request.form.get("closing_gauge")),parse_float(request.form.get("fuel_price")),request.form.get("reference",""),request.form.get("notes",""),current_user()["id"])); c.commit(); flash("⛽ Fuel log saved.","success")
     machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall()
-    logs=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,(f.opening_gauge+f.fuel_received-f.closing_gauge) consumption,(f.fuel_received*f.fuel_price) cost,COALESCE((SELECT SUM(ml.work_hours) FROM machine_logs ml WHERE ml.machine_id=f.machine_id AND ml.date=f.date),0) work_hours,COALESCE((SELECT SUM(ml.work_hours) FROM machine_logs ml WHERE ml.machine_id=f.machine_id AND ml.date=f.date),0)*m.expected_fuel expected_consumption FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? ORDER BY f.date DESC,f.id DESC LIMIT 100",(pid,)).fetchall(); c.close()
-    total_l=c.execute("SELECT COALESCE(SUM(fuel_received),0) FROM fuel_logs WHERE project_id=?",(pid,)).fetchone()[0]; total_cost=c.execute("SELECT COALESCE(SUM(fuel_received*fuel_price),0) FROM fuel_logs WHERE project_id=?",(pid,)).fetchone()[0]; c.close(); return render_template("fuel.html",pid=pid,machines=machines,logs=logs,total_l=total_l,total_cost=total_cost)
+    logs=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,(f.opening_gauge+f.fuel_received-f.closing_gauge) consumption,(f.fuel_received*f.fuel_price) cost,COALESCE((SELECT SUM(ml.work_hours) FROM machine_logs ml WHERE ml.machine_id=f.machine_id AND ml.date=f.date),0) work_hours,COALESCE((SELECT SUM(ml.work_hours) FROM machine_logs ml WHERE ml.machine_id=f.machine_id AND ml.date=f.date),0)*m.expected_fuel expected_consumption FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? ORDER BY f.date DESC,f.id DESC LIMIT 100",(pid,)).fetchall()
+    total_l=c.execute("SELECT COALESCE(SUM(fuel_received),0) FROM fuel_logs WHERE project_id=?",(pid,)).fetchone()[0]
+    total_cost=c.execute("SELECT COALESCE(SUM(fuel_received*fuel_price),0) FROM fuel_logs WHERE project_id=?",(pid,)).fetchone()[0]
+    c.close(); return render_template("fuel.html",pid=pid,machines=machines,logs=logs,total_l=total_l,total_cost=total_cost,today=dt.date.today().isoformat())
 
 @app.route("/projects/<int:pid>/performance",methods=["GET","POST"])
 @login_required
@@ -336,10 +348,10 @@ def machinery(pid):
             flash("🚜 Machine added to this project's fleet.","success")
         elif action=="remove":c.execute("UPDATE machines SET active=0 WHERE id=? AND project_id=?",(request.form["machine_id"],pid));flash("Machine removed from active fleet.","success")
         elif action=="log":
-            c.execute("INSERT INTO machine_logs(project_id,machine_id,date,work_hours,idle_hours,idle_reason,down_hours,down_reason,opening_gauge,fuel_received,closing_gauge,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form["machine_id"],request.form["date"],parse_float(request.form["work_hours"]),parse_float(request.form["idle_hours"]),request.form.get("idle_reason",""),parse_float(request.form["down_hours"]),request.form.get("down_reason",""),parse_float(request.form["opening_gauge"]),parse_float(request.form["fuel_received"]),parse_float(request.form["closing_gauge"]),request.form.get("notes",""),current_user()["id"]))
+            c.execute("INSERT INTO machine_logs(project_id,machine_id,date,work_hours,idle_hours,idle_reason,idle_payable,down_hours,down_reason,opening_gauge,fuel_received,closing_gauge,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form["machine_id"],request.form["date"],parse_float(request.form.get("work_hours")),parse_float(request.form.get("idle_hours")),request.form.get("idle_reason",""),1 if request.form.get("idle_payable")=="1" else 0,parse_float(request.form.get("down_hours")),request.form.get("down_reason",""),parse_float(request.form.get("opening_gauge")),parse_float(request.form.get("fuel_received")),parse_float(request.form.get("closing_gauge")),request.form.get("notes",""),current_user()["id"]))
             flash("⏱️ Machine hours / idle / down / fuel log saved.","success")
         c.commit()
-    machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall();logs=c.execute("SELECT ml.*,m.machine_type,m.code,m.ownership,m.hourly_rate,m.expected_fuel,(ml.work_hours*m.hourly_rate) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel,(ml.work_hours*m.expected_fuel) expected_fuel_qty,CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN ml.work_hours*100.0/(ml.work_hours+ml.idle_hours+ml.down_hours) ELSE 0 END utilization,CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN (ml.work_hours+ml.idle_hours)*100.0/(ml.work_hours+ml.idle_hours+ml.down_hours) ELSE 0 END availability,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge)-(ml.work_hours*m.expected_fuel) fuel_discrepancy FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? ORDER BY ml.date DESC,ml.id DESC LIMIT 50",(pid,)).fetchall();c.close()
+    machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall();logs=c.execute("SELECT ml.*,m.machine_type,m.code,m.ownership,m.hourly_rate,m.expected_fuel,((ml.work_hours + CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel,(ml.work_hours*m.expected_fuel) expected_fuel_qty,CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN ml.work_hours*100.0/(ml.work_hours+ml.idle_hours+ml.down_hours) ELSE 0 END utilization,CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN (ml.work_hours+ml.idle_hours)*100.0/(ml.work_hours+ml.idle_hours+ml.down_hours) ELSE 0 END availability,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge)-(ml.work_hours*m.expected_fuel) fuel_discrepancy FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? ORDER BY ml.date DESC,ml.id DESC LIMIT 50",(pid,)).fetchall();c.close()
     return render_template("machinery.html",pid=pid,machines=machines,logs=logs)
 
 @app.route("/projects/<int:pid>/manpower",methods=["GET","POST"])
@@ -348,7 +360,7 @@ def manpower(pid):
     if not allowed_project(pid) or not can_module("HR"):flash("🚫 HR/manpower access is not assigned.","error");return redirect(url_for("project",pid=pid))
     c=db()
     if request.method=="POST":
-        c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,daily_rate,overtime_hours,overtime_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form["date"],request.form["name"],request.form["employment"],request.form["position"],parse_float(request.form["present"]),parse_float(request.form["daily_rate"]),parse_float(request.form["overtime_hours"]),parse_float(request.form["overtime_rate"]),request.form.get("notes",""),current_user()["id"]));c.commit();flash("👷 Manpower record saved.","success")
+        c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,working_hours,hourly_rate,daily_rate,normal_ot_hours,normal_ot_rate,night_ot_hours,night_ot_rate,sunday_ot_hours,sunday_ot_rate,holiday_ot_hours,holiday_ot_rate,overtime_hours,overtime_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form["date"],request.form["name"],request.form["employment"],request.form["position"],parse_float(request.form.get("present")),parse_float(request.form.get("working_hours",8)),parse_float(request.form.get("hourly_rate")),parse_float(request.form.get("daily_rate")),parse_float(request.form.get("normal_ot_hours")),parse_float(request.form.get("normal_ot_rate")),parse_float(request.form.get("night_ot_hours")),parse_float(request.form.get("night_ot_rate")),parse_float(request.form.get("sunday_ot_hours")),parse_float(request.form.get("sunday_ot_rate")),parse_float(request.form.get("holiday_ot_hours")),parse_float(request.form.get("holiday_ot_rate")),0,0,request.form.get("notes",""),current_user()["id"]));c.commit();flash("👷 Manpower record saved.","success")
     rows=c.execute("SELECT * FROM manpower WHERE project_id=? ORDER BY date DESC,id DESC LIMIT 100",(pid,)).fetchall();c.close();return render_template("manpower.html",pid=pid,rows=rows)
 
 @app.route("/projects/<int:pid>/store",methods=["GET","POST"])
@@ -368,11 +380,25 @@ def store(pid):
 @app.route("/projects/<int:pid>/crew",methods=["GET","POST"])
 @login_required
 def crew(pid):
-    if not allowed_project(pid) or not can_module("HR"): flash("🚫 Crew/HR access is not assigned.","error"); return redirect(url_for("project",pid=pid))
+    if not allowed_project(pid) or not can_module("HR"): flash("🚫 Crew access is not assigned.","error"); return redirect(url_for("project",pid=pid))
     c=db()
     if request.method=="POST":
-        c.execute("INSERT INTO project_crews(project_id,date,group_name,position,name,employment,skill_level,working_hours,hourly_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form.get("date",dt.date.today().isoformat()),request.form["group_name"],request.form["position"],request.form["name"],request.form["employment"],request.form.get("skill_level","Skilled"),parse_float(request.form.get("working_hours")),parse_float(request.form.get("hourly_rate")),request.form.get("notes",""),current_user()["id"])); c.commit(); flash("👷 Crew member registered.","success")
-    rows=c.execute("SELECT * FROM project_crews WHERE project_id=? ORDER BY group_name,position,name",(pid,)).fetchall(); c.close(); return render_template("crew.html",pid=pid,rows=rows)
+        action=request.form.get("action","add")
+        if action=="add_group":
+            name=request.form.get("new_group","").strip()
+            if name: c.execute("INSERT OR IGNORE INTO crew_groups(name) VALUES(?)",(name,)); c.commit(); flash("👥 Group added for future selection.","success")
+        elif action=="add_position":
+            name=request.form.get("new_position","").strip()
+            if name: c.execute("INSERT OR IGNORE INTO crew_positions(name) VALUES(?)",(name,)); c.commit(); flash("👷 Position added for future selection.","success")
+        else:
+            group=request.form.get("group_name","").strip(); position=request.form.get("position","").strip()
+            if group: c.execute("INSERT OR IGNORE INTO crew_groups(name) VALUES(?)",(group,))
+            if position: c.execute("INSERT OR IGNORE INTO crew_positions(name) VALUES(?)",(position,))
+            c.execute("INSERT INTO project_crews(project_id,date,group_name,position,name,employment,skill_level,working_hours,hourly_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form.get("date",dt.date.today().isoformat()),group,position,request.form["name"],request.form["employment"],request.form.get("skill_level","Skilled"),parse_float(request.form.get("working_hours")),parse_float(request.form.get("hourly_rate")),request.form.get("notes",""),current_user()["id"])); c.commit(); flash("👷 Crew member registered.","success")
+    groups=[r["name"] for r in c.execute("SELECT name FROM crew_groups WHERE active=1 ORDER BY name").fetchall()]
+    positions=[r["name"] for r in c.execute("SELECT name FROM crew_positions WHERE active=1 ORDER BY name").fetchall()]
+    rows=c.execute("SELECT * FROM project_crews WHERE project_id=? ORDER BY group_name,position,name",(pid,)).fetchall(); c.close()
+    return render_template("crew.html",pid=pid,rows=rows,crew_groups=groups,position_catalog=positions)
 
 @app.route("/projects/<int:pid>/report-settings",methods=["GET","POST"])
 @admin_required
@@ -413,7 +439,7 @@ def reports(pid):
         out.append({"item_no":b["item_no"],"description":b["description"],"unit":b["unit"],"rate":b["rate"],"contract_qty":b["contract_qty"],"previous_qty":prev,"period_qty":per,"todate_qty":td,"previous_amount":prev*b["rate"],"period_amount":per*b["rate"],"todate_amount":td*b["rate"]})
     inc=c.execute("SELECT COALESCE(SUM(quantity*b.rate),0) x FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=? AND date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()["x"]
     me=c.execute("SELECT COALESCE(SUM(ml.work_hours*m.hourly_rate),0) x FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? AND ml.date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()["x"]
-    pe=c.execute("SELECT COALESCE(SUM(present*daily_rate+overtime_hours*overtime_rate),0) x FROM manpower WHERE project_id=? AND date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()["x"]
+    pe=c.execute("SELECT COALESCE(SUM(present*daily_rate+normal_ot_hours*normal_ot_rate+night_ot_hours*night_ot_rate+sunday_ot_hours*sunday_ot_rate+holiday_ot_hours*holiday_ot_rate),0) x FROM manpower WHERE project_id=? AND date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()["x"]
     se=c.execute("SELECT COALESCE(SUM(issued*unit_cost),0) x FROM store_logs WHERE project_id=? AND date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()["x"]
     oe=c.execute("SELECT COALESCE(SUM(amount),0) x FROM finance_logs WHERE project_id=? AND kind='Expense' AND date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()["x"]
     c.close();return render_template("reports.html",pid=pid,rows=out,period=period,anchor=anchor,start=start,end=end,income=inc,expenses={"Machinery":me,"Manpower":pe,"Store":se,"Other":oe},total_expense=me+pe+se+oe)
@@ -497,7 +523,7 @@ def users():
 def add_user():
     c=db()
     try:
-        role="SUPER_ADMIN" if request.form["role"]=="SUPER_ADMIN" else "STAFF";c.execute("INSERT INTO users(full_name,username,password_hash,department,location,role) VALUES(?,?,?,?,?,?)",(request.form["full_name"],request.form["username"],generate_password_hash(request.form["password"]),request.form["department"],request.form["location"],role));uid=c.execute("SELECT id FROM users WHERE username=?",(request.form["username"],)).fetchone()["id"]
+        role="SUPER_ADMIN" if request.form["role"]=="SUPER_ADMIN" else "STAFF";c.execute("INSERT INTO users(full_name,username,password_hash,department,location,role) VALUES(?,?,?,?,?,?)",(request.form["full_name"],request.form["username"],generate_password_hash(request.form["password"]),request.form["department"],request.form["location"],role));uid=c.execute("SELECT id FROM users WHERE username=?",(request.form["username"],)).fetchone()["id"]; c.execute("UPDATE users SET staff_id=? WHERE id=?",(f"BAGC-{uid:05d}",uid))
         for pid in request.form.getlist("project_ids"):c.execute("INSERT OR IGNORE INTO user_projects(user_id,project_id) VALUES(?,?)",(uid,pid))
         c.commit();flash("👤 User created with project permissions.","success")
     except Exception as e:c.rollback();flash("Could not create user: "+str(e),"error")
@@ -548,36 +574,40 @@ def edit_project(pid):
 
 def import_boq_xlsx(path,pid):
     wb=load_workbook(path,data_only=True,read_only=True)
-    # Prefer BOQ sheet; otherwise locate a sheet with the expected header labels.
-    candidates=[ws for ws in wb.worksheets if "boq" in ws.title.lower()]
-    candidates += [ws for ws in wb.worksheets if ws not in candidates]
-    target=None;header=None
-    for ws in candidates:
-        for row in ws.iter_rows(min_row=1,max_row=min(ws.max_row,100),values_only=True):
-            vals=[str(v).strip().lower() if v is not None else "" for v in row]
-            if any("item no" in v for v in vals) and any("description" in v for v in vals) and any("unit"==v or v.endswith("unit") for v in vals):
-                target=ws;header=vals;break
-        if target:break
-    if not target:raise ValueError("Could not find a BOQ header row containing Item No, Description and Unit.")
-    def col(names):
-        for i,v in enumerate(header):
-            if any(n in v for n in names):return i
-        return None
-    ci=col(["item no","item number","item"]);cd=col(["description","general activity"]);cu=col(["unit"]);cq=col(["total contract quantity","contract quantity","quantity"]);cr=col(["contract rate","unit rate","rate"])
-    if None in (ci,cd,cu,cr):raise ValueError("BOQ needs item no, description, unit and rate columns.")
-    c=db();count=0
-    for row in target.iter_rows(min_row=target._current_row+1 if hasattr(target,'_current_row') else 2,values_only=True):
-        if ci>=len(row) or cd>=len(row):continue
-        item=row[ci];desc=row[cd]
-        if item is None or desc is None:continue
-        try:rate=parse_float(row[cr])
-        except:rate=0
-        qty=parse_float(row[cq]) if cq is not None and cq<len(row) else 0
-        unit=str(row[cu]).strip() if cu<len(row) and row[cu] is not None else ""
-        item=str(item).strip();desc=str(desc).strip()
-        if not item or not desc:continue
-        c.execute("INSERT INTO boq(project_id,item_no,description,unit,rate,contract_qty,source_sheet) VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,item_no) DO UPDATE SET description=excluded.description,unit=excluded.unit,rate=excluded.rate,contract_qty=excluded.contract_qty,source_sheet=excluded.source_sheet",(pid,item,desc,unit,rate,qty,target.title));count+=1
-    c.commit();c.close();return count,target.title
+    c=db(); count=0; sheets=[]
+    try:
+        for ws in wb.worksheets:
+            rows=list(ws.iter_rows(min_row=1,max_row=min(ws.max_row or 1,5000),values_only=True))
+            header=None; header_idx=None
+            for idx,row in enumerate(rows):
+                vals=[str(v).strip().lower() if v is not None else "" for v in row]
+                if any("item no" in v or v in ("item number","item no.") for v in vals) and any("description" in v or "activity" in v for v in vals) and any(v=="unit" or v.endswith(" unit") for v in vals) and any("rate" in v for v in vals):
+                    header=vals; header_idx=idx; break
+            if header is None: continue
+            def col(names):
+                for i,v in enumerate(header):
+                    if any(n in v for n in names): return i
+                return None
+            ci=col(["item no","item number","item no."]); cd=col(["description","general activity","activity"]); cu=col(["unit"]); cq=col(["total contract quantity","contract quantity","quantity","qty"]); cr=col(["contract rate","unit rate","rate"])
+            if None in (ci,cd,cu,cr): continue
+            sheet_count=0
+            for row in rows[header_idx+1:]:
+                if ci>=len(row) or cd>=len(row): continue
+                item,desc=row[ci],row[cd]
+                if item is None or desc is None: continue
+                item_s=str(item).strip(); desc_s=str(desc).strip()
+                if not item_s or not desc_s or item_s.lower() in ("item no","item number","item"): continue
+                rate=parse_float(row[cr]) if cr<len(row) else 0
+                qty=parse_float(row[cq]) if cq is not None and cq<len(row) else 0
+                unit=str(row[cu]).strip() if cu<len(row) and row[cu] is not None else ""
+                if not unit and rate==0 and qty==0: continue
+                c.execute("INSERT INTO boq(project_id,item_no,description,unit,rate,contract_qty,source_sheet) VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,item_no) DO UPDATE SET description=excluded.description,unit=excluded.unit,rate=excluded.rate,contract_qty=excluded.contract_qty,source_sheet=excluded.source_sheet",(pid,item_s,desc_s,unit,rate,qty,ws.title)); count+=1; sheet_count+=1
+            if sheet_count: sheets.append(f"{ws.title} ({sheet_count})")
+        c.commit()
+    finally:
+        c.close(); wb.close()
+    if not sheets: raise ValueError("No BOQ rows found. Use headers such as Item No, Description, Unit, Contract Quantity and Rate.")
+    return count, ", ".join(sheets)
 
 @app.route("/admin/boq/<int:pid>",methods=["GET","POST"])
 @admin_required
@@ -590,7 +620,7 @@ def boq_admin(pid):
             elif action=="upload":
                 f=request.files.get("file")
                 if not f or not f.filename.lower().endswith((".xlsx",".xlsm")):raise ValueError("Upload an .xlsx or .xlsm BOQ file.")
-                name=secure_filename(f.filename);path=os.path.join(UPLOADS,name);f.save(path);count,sheet=import_boq_xlsx(path,pid);c=db();c.execute("INSERT INTO boq_uploads(project_id,filename,uploaded_at,user_id,rows_imported) VALUES(?,?,?,?,?)",(pid,name,dt.datetime.now().isoformat(timespec="seconds"),current_user()["id"],count));c.commit();flash(f"📑 BOQ imported: {count} items from sheet '{sheet}'.","success")
+                name=secure_filename(f.filename);path=os.path.join(UPLOADS,name);f.save(path);c.close();count,sheet=import_boq_xlsx(path,pid);c=db();c.execute("INSERT INTO boq_uploads(project_id,filename,uploaded_at,user_id,rows_imported) VALUES(?,?,?,?,?)",(pid,name,dt.datetime.now().isoformat(timespec="seconds"),current_user()["id"],count));c.commit();flash(f"📑 BOQ imported: {count} items from sheet '{sheet}'.","success")
             c.commit()
         except Exception as e:c.rollback();flash("BOQ import error: "+str(e),"error")
     rows=c.execute("SELECT * FROM boq WHERE project_id=? ORDER BY item_no",(pid,)).fetchall();uploads=c.execute("SELECT * FROM boq_uploads WHERE project_id=? ORDER BY uploaded_at DESC LIMIT 10",(pid,)).fetchall();c.close();return render_template("boq.html",pid=pid,rows=rows,uploads=uploads)
