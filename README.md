@@ -40,3 +40,14 @@ V20 also fixes the machinery/fuel save errors, adds linked daily work packages, 
 - Machinery has a signed assignment start date, start meter/hour and total signed hours. The assignment automatically ends when cumulative work + idle + down hours reach the signed total. A new signed assignment is required for reuse.
 - Machinery assignment endpoints are included and the machine add/log workflow is committed before the page is rendered.
 - SQLite WAL mode is configured during initialization rather than on every request, reducing lock contention. Login no longer reruns database migrations on every authentication request.
+
+
+## V25 workflow additions
+- Super Admin can assign staff to Head Office departments/teams and set Head Office reporting lines.
+- Super Admin can assign staff to projects with a project-specific position and project manager/reporting line.
+- Project Team page shows assigned project personnel and reporting.
+- Company Workflow supports sender/receiver file routing for all departments, including material test results and DOC/XLS/XLSX/PDF/image files.
+- Inter-project transfer register supports materials, fuel and machinery with sending and receiving confirmation. Material receipts are posted into the receiving project's store. Machinery is moved to the receiving project after acceptance.
+- Consultant/Staff company-paid expense claims support beneficiary, ETB amount, receipt upload, Finance/Super Admin approval and finance posting.
+- CONSULTANT accounts can log in and access their assigned project dashboard/workflow.
+- Workflow files and receipts are stored under the configured BAGC_DATA_DIR uploads folder.

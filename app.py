@@ -13,13 +13,17 @@ os.makedirs(DATA_DIR, exist_ok=True)
 DB=os.path.join(DATA_DIR,"bagc.db")
 UPLOADS=os.path.join(DATA_DIR,"uploads")
 USER_PHOTOS=os.path.join(UPLOADS,"user_photos")
+WORKFLOW_FILES=os.path.join(UPLOADS,"workflow")
 os.makedirs(UPLOADS,exist_ok=True)
 os.makedirs(USER_PHOTOS,exist_ok=True)
+os.makedirs(WORKFLOW_FILES,exist_ok=True)
 ALLOWED_PHOTO_EXT={"jpg","jpeg","png","webp"}
+ALLOWED_FILE_EXT={"pdf","doc","docx","xls","xlsx","csv","txt","jpg","jpeg","png","webp","zip","rar"}
+MAX_UPLOAD_MB=25
 app=Flask(__name__)
 app.secret_key=os.environ.get("SECRET_KEY","bagc-change-this-secret")
 
-DEPARTMENTS=["Administration","Design","Machinery","Finance","HR","Store","Project"]
+DEPARTMENTS=["Administration","Design","Machinery","Finance","HR","Store","Project","Consultant"]
 HEAD_OFFICE_STRUCTURE=[
 ("General Manager",None,"Management"),
 ("Operational Manager","General Manager","Management"),
@@ -143,6 +147,12 @@ def init_db():
     CREATE TABLE IF NOT EXISTS rfi_steps(id INTEGER PRIMARY KEY,rfi_id INTEGER,step_order INTEGER,stage TEXT,assigned_user_id INTEGER,decision TEXT DEFAULT 'PENDING',comments TEXT,inspection_date TEXT,signed_at TEXT,UNIQUE(rfi_id,step_order));
     CREATE TABLE IF NOT EXISTS saved_reports(id INTEGER PRIMARY KEY,project_id INTEGER,report_no TEXT,report_type TEXT,scope TEXT DEFAULT 'ALL',start_date TEXT,end_date TEXT,generated_by INTEGER,generated_at TEXT DEFAULT CURRENT_TIMESTAMP,snapshot_json TEXT,source_report_ids TEXT DEFAULT '[]',UNIQUE(project_id,report_type,scope,start_date,end_date));
     CREATE TABLE IF NOT EXISTS machine_assignments(id INTEGER PRIMARY KEY,machine_id INTEGER,project_id INTEGER,start_date TEXT,start_hour REAL DEFAULT 0,total_signed_hours REAL DEFAULT 0,hours_used REAL DEFAULT 0,end_date TEXT,end_hour REAL,status TEXT DEFAULT 'ACTIVE',assigned_by INTEGER,ended_by INTEGER,ended_at TEXT,notes TEXT);
+    CREATE TABLE IF NOT EXISTS workflow_files(id INTEGER PRIMARY KEY,project_id INTEGER,from_user_id INTEGER,to_user_id INTEGER,to_org_unit_id INTEGER,file_name TEXT,stored_name TEXT,file_type TEXT,subject TEXT,message TEXT,category TEXT DEFAULT 'General Correspondence',status TEXT DEFAULT 'SENT',sent_at TEXT DEFAULT CURRENT_TIMESTAMP,received_at TEXT,created_by INTEGER);
+    CREATE TABLE IF NOT EXISTS material_transfers(id INTEGER PRIMARY KEY,from_project_id INTEGER,to_project_id INTEGER,material_id INTEGER,date TEXT,quantity REAL DEFAULT 0,unit_cost REAL DEFAULT 0,reference TEXT,notes TEXT,sent_by INTEGER,received_by INTEGER,status TEXT DEFAULT 'SENT',sent_at TEXT DEFAULT CURRENT_TIMESTAMP,received_at TEXT);
+    CREATE TABLE IF NOT EXISTS fuel_transfers(id INTEGER PRIMARY KEY,from_project_id INTEGER,to_project_id INTEGER,machine_id INTEGER,date TEXT,litres REAL DEFAULT 0,unit_cost REAL DEFAULT 0,reference TEXT,notes TEXT,sent_by INTEGER,received_by INTEGER,status TEXT DEFAULT 'SENT',sent_at TEXT DEFAULT CURRENT_TIMESTAMP,received_at TEXT);
+    CREATE TABLE IF NOT EXISTS machine_transfers(id INTEGER PRIMARY KEY,from_project_id INTEGER,to_project_id INTEGER,machine_id INTEGER,date TEXT,notes TEXT,sent_by INTEGER,received_by INTEGER,status TEXT DEFAULT 'SENT',sent_at TEXT DEFAULT CURRENT_TIMESTAMP,received_at TEXT);
+    CREATE TABLE IF NOT EXISTS expense_claims(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,beneficiary_user_id INTEGER,beneficiary_name TEXT,category TEXT,description TEXT,amount REAL DEFAULT 0,paid_by_company INTEGER DEFAULT 1,receipt_file TEXT,receipt_name TEXT,submitted_by INTEGER,approved_by INTEGER,status TEXT DEFAULT 'SUBMITTED',created_at TEXT DEFAULT CURRENT_TIMESTAMP,approved_at TEXT);
+    CREATE TABLE IF NOT EXISTS project_assignments(id INTEGER PRIMARY KEY,user_id INTEGER,project_id INTEGER,position TEXT,manager_user_id INTEGER,active INTEGER DEFAULT 1,UNIQUE(user_id,project_id));
     ''')
     # Safe migrations for databases created by earlier BAGC versions.
     existing_bq=[r['name'] for r in c.execute("PRAGMA table_info(boq)").fetchall()]
@@ -156,6 +166,12 @@ def init_db():
     if 'position' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN position TEXT")
     if 'staff_id' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN staff_id TEXT")
     if 'photo_filename' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN photo_filename TEXT")
+    # Workflow / project hierarchy migrations.
+    existing_up=[r['name'] for r in c.execute("PRAGMA table_info(user_projects)").fetchall()]
+    # project_assignments is additive and preserves legacy user_projects access.
+    for ur in c.execute("SELECT user_id,project_id FROM user_projects").fetchall():
+        c.execute("INSERT OR IGNORE INTO project_assignments(user_id,project_id,position) VALUES(?,?,?)",(ur['user_id'],ur['project_id'],''))
+
     for ur in c.execute("SELECT id,department,staff_id FROM users").fetchall():
         if not ur['staff_id'] or str(ur['staff_id']).startswith('BAGC-') and str(ur['staff_id'])[5:].isdigit(): c.execute("UPDATE users SET staff_id=? WHERE id=?",(make_staff_id(ur['department'],ur['id']),ur['id']))
     existing_dw=[r['name'] for r in c.execute("PRAGMA table_info(daily_work)").fetchall()]
@@ -924,6 +940,156 @@ def rfi_print(pid,rid):
     if not r: return ("RFI not found",404)
     return render_template("rfi_print.html",r=r,inspections=inspections)
 
+
+@app.route("/admin/users/<int:uid>/project-assignment", methods=["POST"])
+@admin_required
+def assign_project_role(uid):
+    c=db()
+    try:
+        pid=int(request.form["project_id"]); position=request.form.get("project_position","").strip(); manager=request.form.get("project_manager_id") or None
+        c.execute("INSERT INTO user_projects(user_id,project_id) VALUES(?,?) ON CONFLICT(user_id,project_id) DO NOTHING",(uid,pid))
+        c.execute("INSERT INTO project_assignments(user_id,project_id,position,manager_user_id,active) VALUES(?,?,?,?,1) ON CONFLICT(user_id,project_id) DO UPDATE SET position=excluded.position,manager_user_id=excluded.manager_user_id,active=1",(uid,pid,position,manager))
+        c.commit(); flash("🏗️ Project assignment, position and reporting line saved.","success")
+    except Exception as e: c.rollback(); flash("Project assignment failed: "+str(e),"error")
+    c.close(); return redirect(url_for("users"))
+
+@app.route("/admin/users/<int:uid>/project-assignment/<int:aid>/remove", methods=["POST"])
+@admin_required
+def remove_project_assignment(uid,aid):
+    c=db(); c.execute("UPDATE project_assignments SET active=0 WHERE id=? AND user_id=?",(aid,uid)); c.execute("DELETE FROM user_projects WHERE user_id=? AND project_id=(SELECT project_id FROM project_assignments WHERE id=?)",(uid,aid)); c.commit(); c.close(); flash("🏗️ Project assignment removed; staff record remains permanent.","success"); return redirect(url_for("users"))
+
+
+@app.route("/projects/<int:pid>/team")
+@login_required
+def project_team(pid):
+    if not allowed_project(pid): return redirect(url_for("dashboard"))
+    c=db(); p=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone()
+    rows=c.execute("SELECT pa.*,u.full_name,u.staff_id,u.department,u.phone,u.email,u.org_unit_id,ou.name org_unit_name,m.full_name manager_name FROM project_assignments pa JOIN users u ON u.id=pa.user_id LEFT JOIN org_units ou ON ou.id=u.org_unit_id LEFT JOIN users m ON m.id=pa.manager_user_id WHERE pa.project_id=? AND pa.active=1 AND u.active=1 ORDER BY u.full_name",(pid,)).fetchall()
+    c.close(); return render_template("project_team.html",pid=pid,p=p,rows=rows)
+
+@app.route("/workflow", methods=["GET","POST"])
+@login_required
+def workflow():
+    c=db(); me=current_user(); projects=c.execute("SELECT p.* FROM projects p JOIN user_projects up ON up.project_id=p.id WHERE up.user_id=? ORDER BY p.name",(me["id"],)).fetchall() if me["role"]!="SUPER_ADMIN" else c.execute("SELECT * FROM projects ORDER BY name").fetchall()
+    users=c.execute("SELECT id,full_name,department,position,org_unit_id FROM users WHERE active=1 ORDER BY full_name").fetchall()
+    units=c.execute("SELECT id,name,unit_type FROM org_units WHERE active=1 ORDER BY sort_order,name").fetchall()
+    if request.method=="POST":
+        try:
+            to_user=request.form.get("to_user_id") or None; to_unit=request.form.get("to_org_unit_id") or None; pid=request.form.get("project_id") or None
+            subject=request.form.get("subject","").strip(); message=request.form.get("message","").strip(); category=request.form.get("category","General Correspondence")
+            f=request.files.get("file")
+            if not subject: raise ValueError("Subject is required.")
+            if not f or not f.filename: raise ValueError("Select a file to send.")
+            ext=secure_filename(f.filename).rsplit('.',1)[-1].lower() if '.' in f.filename else ''
+            if ext not in ALLOWED_FILE_EXT: raise ValueError("Unsupported file type.")
+            if request.content_length and request.content_length>MAX_UPLOAD_MB*1024*1024: raise ValueError(f"File must be {MAX_UPLOAD_MB} MB or smaller.")
+            stored=f"{dt.datetime.now().strftime('%Y%m%d%H%M%S')}_{me['id']}_{secure_filename(f.filename)}"; f.save(os.path.join(WORKFLOW_FILES,stored))
+            c.execute("INSERT INTO workflow_files(project_id,from_user_id,to_user_id,to_org_unit_id,file_name,stored_name,file_type,subject,message,category,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,me["id"],to_user,to_unit,f.filename,stored,ext,subject,message,category,me["id"]))
+            c.commit(); flash("📤 File sent through the company hierarchy.","success")
+        except Exception as e: c.rollback(); flash("File workflow failed: "+str(e),"error")
+    sent=c.execute("SELECT wf.*,fu.full_name sender,tu.full_name receiver,ou.name receiver_unit,p.name project_name FROM workflow_files wf LEFT JOIN users fu ON fu.id=wf.from_user_id LEFT JOIN users tu ON tu.id=wf.to_user_id LEFT JOIN org_units ou ON ou.id=wf.to_org_unit_id LEFT JOIN projects p ON p.id=wf.project_id WHERE wf.from_user_id=? ORDER BY wf.sent_at DESC LIMIT 100",(me["id"],)).fetchall()
+    received=c.execute("SELECT wf.*,fu.full_name sender,tu.full_name receiver,ou.name receiver_unit,p.name project_name FROM workflow_files wf LEFT JOIN users fu ON fu.id=wf.from_user_id LEFT JOIN users tu ON tu.id=wf.to_user_id LEFT JOIN org_units ou ON ou.id=wf.to_org_unit_id LEFT JOIN projects p ON p.id=wf.project_id WHERE wf.to_user_id=? OR wf.to_org_unit_id=? ORDER BY wf.sent_at DESC LIMIT 100",(me["id"],me["org_unit_id"] or -1)).fetchall()
+    c.close(); return render_template("workflow.html",projects=projects,users=users,units=units,sent=sent,received=received)
+
+@app.route("/workflow/files/<path:filename>")
+@login_required
+def workflow_file(filename):
+    c=db(); me=current_user(); row=c.execute("SELECT * FROM workflow_files WHERE stored_name=? AND (from_user_id=? OR to_user_id=? OR to_org_unit_id=? OR ?='SUPER_ADMIN')",(filename,me["id"],me["id"],me["org_unit_id"] or -1,me["role"])).fetchone(); c.close()
+    if not row: return ("File not found or access denied",404)
+    return send_from_directory(WORKFLOW_FILES,filename,as_attachment=True,download_name=row["file_name"])
+
+@app.route("/workflow/files/<int:wfid>/receive",methods=["POST"])
+@login_required
+def receive_workflow_file(wfid):
+    c=db(); me=current_user(); c.execute("UPDATE workflow_files SET status='RECEIVED',received_at=? WHERE id=? AND (to_user_id=? OR to_org_unit_id=?)",(dt.datetime.now().isoformat(timespec="seconds"),wfid,me["id"],me["org_unit_id"] or -1)); c.commit(); c.close(); flash("📥 File marked as received.","success"); return redirect(url_for("workflow"))
+
+@app.route("/projects/<int:pid>/transfers",methods=["GET","POST"])
+@login_required
+def transfers(pid):
+    if not allowed_project(pid): return redirect(url_for("dashboard"))
+    c=db(); me=current_user(); projects=c.execute("SELECT * FROM projects WHERE id<>? ORDER BY name",(pid,)).fetchall(); materials=c.execute("SELECT * FROM materials WHERE project_id=? AND active=1 ORDER BY category,name",(pid,)).fetchall(); machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall()
+    if request.method=="POST":
+        action=request.form.get("action")
+        try:
+            to_pid=int(request.form["to_project_id"]); date=request.form.get("date",dt.date.today().isoformat()); ref=request.form.get("reference",""); notes=request.form.get("notes","")
+            if action=="material": c.execute("INSERT INTO material_transfers(from_project_id,to_project_id,material_id,date,quantity,unit_cost,reference,notes,sent_by) VALUES(?,?,?,?,?,?,?,?,?)",(pid,to_pid,request.form["material_id"],date,parse_float(request.form.get("quantity")),parse_float(request.form.get("unit_cost")),ref,notes,me["id"]))
+            elif action=="fuel": c.execute("INSERT INTO fuel_transfers(from_project_id,to_project_id,machine_id,date,litres,unit_cost,reference,notes,sent_by) VALUES(?,?,?,?,?,?,?,?,?)",(pid,to_pid,request.form.get("machine_id") or None,date,parse_float(request.form.get("litres")),parse_float(request.form.get("unit_cost")),ref,notes,me["id"]))
+            elif action=="machine": c.execute("INSERT INTO machine_transfers(from_project_id,to_project_id,machine_id,date,notes,sent_by) VALUES(?,?,?,?,?,?)",(pid,to_pid,request.form["machine_id"],date,notes,me["id"]))
+            c.commit(); flash("🔄 Transfer sent to the receiving project store/team for confirmation.","success")
+        except Exception as e: c.rollback(); flash("Transfer failed: "+str(e),"error")
+    outgoing=c.execute("SELECT mt.*,m.name material_name,m.unit,t.name to_project,fu.full_name sender FROM material_transfers mt JOIN materials m ON m.id=mt.material_id JOIN projects t ON t.id=mt.to_project_id LEFT JOIN users fu ON fu.id=mt.sent_by WHERE mt.from_project_id=? ORDER BY mt.sent_at DESC",(pid,)).fetchall()
+    incoming=c.execute("SELECT mt.*,m.name material_name,m.unit,f.name from_project,fu.full_name sender FROM material_transfers mt JOIN materials m ON m.id=mt.material_id JOIN projects f ON f.id=mt.from_project_id LEFT JOIN users fu ON fu.id=mt.sent_by WHERE mt.to_project_id=? ORDER BY mt.sent_at DESC",(pid,)).fetchall()
+    fuel_out=c.execute("SELECT ft.*,p.name to_project,fu.full_name sender,m.code,m.machine_type FROM fuel_transfers ft JOIN projects p ON p.id=ft.to_project_id LEFT JOIN users fu ON fu.id=ft.sent_by LEFT JOIN machines m ON m.id=ft.machine_id WHERE ft.from_project_id=? ORDER BY ft.sent_at DESC",(pid,)).fetchall()
+    fuel_in=c.execute("SELECT ft.*,p.name from_project,fu.full_name sender,m.code,m.machine_type FROM fuel_transfers ft JOIN projects p ON p.id=ft.from_project_id LEFT JOIN users fu ON fu.id=ft.sent_by LEFT JOIN machines m ON m.id=ft.machine_id WHERE ft.to_project_id=? ORDER BY ft.sent_at DESC",(pid,)).fetchall()
+    mach_out=c.execute("SELECT mt.*,p.name to_project,m.code,m.machine_type FROM machine_transfers mt JOIN projects p ON p.id=mt.to_project_id JOIN machines m ON m.id=mt.machine_id WHERE mt.from_project_id=? ORDER BY mt.sent_at DESC",(pid,)).fetchall()
+    mach_in=c.execute("SELECT mt.*,p.name from_project,m.code,m.machine_type FROM machine_transfers mt JOIN projects p ON p.id=mt.from_project_id JOIN machines m ON m.id=mt.machine_id WHERE mt.to_project_id=? ORDER BY mt.sent_at DESC",(pid,)).fetchall()
+    c.close(); return render_template("transfers.html",pid=pid,projects=projects,materials=materials,machines=machines,outgoing=outgoing,incoming=incoming,fuel_out=fuel_out,fuel_in=fuel_in,mach_out=mach_out,mach_in=mach_in)
+
+@app.route("/projects/<int:pid>/transfers/<string:kind>/<int:tid>/receive",methods=["POST"])
+@login_required
+def receive_transfer(pid,kind,tid):
+    if not allowed_project(pid): return redirect(url_for("dashboard"))
+    c=db(); me=current_user(); table={'material':'material_transfers','fuel':'fuel_transfers','machine':'machine_transfers'}.get(kind)
+    if not table: c.close(); return ("Invalid transfer",400)
+    required={'material':'Store','fuel':'Machinery','machine':'Machinery'}[kind]
+    if me['role']!='SUPER_ADMIN' and me['department'] not in (required,'Project'):
+        c.close(); flash(f"🚫 Only {required} / Project personnel can receive this transfer.","error"); return redirect(url_for("transfers",pid=pid))
+    now=dt.datetime.now().isoformat(timespec="seconds")
+    row=c.execute(f"SELECT * FROM {table} WHERE id=? AND to_project_id=? AND status='SENT'",(tid,pid)).fetchone()
+    if not row: c.close(); flash("Transfer not found, already received, or not addressed to this project.","error"); return redirect(url_for("transfers",pid=pid))
+    c.execute(f"UPDATE {table} SET status='RECEIVED',received_by=?,received_at=? WHERE id=?",(me["id"],now,tid))
+    if kind=='material':
+        src=c.execute("SELECT * FROM materials WHERE id=?",(row['material_id'],)).fetchone()
+        if src:
+            target=c.execute("SELECT id FROM materials WHERE project_id=? AND name=?",(pid,src['name'])).fetchone()
+            if not target:
+                c.execute("INSERT INTO materials(project_id,category,name,unit,min_stock) VALUES(?,?,?,?,?)",(pid,src['category'],src['name'],src['unit'],src['min_stock'])); target=c.execute("SELECT last_insert_rowid() id").fetchone()
+            c.execute("INSERT INTO store_logs(project_id,material_id,date,received,issued,unit_cost,reference,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?)",(pid,target['id'],row['date'],row['quantity'],0,row['unit_cost'],row['reference'] or f'Transfer from project {row["from_project_id"]}',row['notes'] or 'Inter-project material transfer received',me['id']))
+    elif kind=='machine':
+        c.execute("UPDATE machines SET project_id=? WHERE id=?",(pid,row['machine_id']))
+    c.commit(); c.close(); flash("📥 Transfer received and recorded in the receiving project.","success"); return redirect(url_for("transfers",pid=pid))
+
+@app.route("/projects/<int:pid>/expenses/claim",methods=["GET","POST"])
+@login_required
+def expense_claim(pid):
+    if not allowed_project(pid): return redirect(url_for("dashboard"))
+    c=db(); me=current_user(); users=c.execute("SELECT id,full_name,department,position FROM users WHERE active=1 ORDER BY full_name").fetchall()
+    if request.method=="POST":
+        try:
+            receipt=request.files.get("receipt"); stored=None; original=None
+            if receipt and receipt.filename:
+                ext=secure_filename(receipt.filename).rsplit('.',1)[-1].lower() if '.' in receipt.filename else ''
+                if ext not in ALLOWED_FILE_EXT: raise ValueError("Unsupported receipt file type.")
+                stored=f"receipt_{dt.datetime.now().strftime('%Y%m%d%H%M%S')}_{me['id']}_{secure_filename(receipt.filename)}"; receipt.save(os.path.join(WORKFLOW_FILES,stored)); original=receipt.filename
+            c.execute("INSERT INTO expense_claims(project_id,date,beneficiary_user_id,beneficiary_name,category,description,amount,paid_by_company,receipt_file,receipt_name,submitted_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form.get('date',dt.date.today().isoformat()),request.form.get('beneficiary_user_id') or None,request.form.get('beneficiary_name',''),request.form.get('category','Consultant / Staff'),request.form.get('description',''),parse_float(request.form.get('amount')),1,stored,original,me['id']))
+            c.commit(); flash("💳 Company-paid expense submitted with receipt tracking.","success")
+        except Exception as e: c.rollback(); flash("Expense claim failed: "+str(e),"error")
+    rows=c.execute("SELECT ec.*,u.full_name beneficiary, s.full_name submitter FROM expense_claims ec LEFT JOIN users u ON u.id=ec.beneficiary_user_id LEFT JOIN users s ON s.id=ec.submitted_by WHERE ec.project_id=? ORDER BY ec.created_at DESC",(pid,)).fetchall(); c.close(); return render_template("expense_claim.html",pid=pid,users=users,rows=rows)
+
+
+@app.route("/projects/<int:pid>/expenses/<int:eid>/<action>",methods=["POST"])
+@login_required
+def process_expense_claim(pid,eid,action):
+    me=current_user()
+    if me['role']!='SUPER_ADMIN' and me['department']!='Finance':
+        flash("🚫 Finance / Super Admin approval is required.","error"); return redirect(url_for("expense_claim",pid=pid))
+    c=db(); row=c.execute("SELECT * FROM expense_claims WHERE id=? AND project_id=?",(eid,pid)).fetchone()
+    if not row: c.close(); flash("Expense claim not found.","error"); return redirect(url_for("expense_claim",pid=pid))
+    status='APPROVED' if action=='approve' else ('REJECTED' if action=='reject' else None)
+    if not status: c.close(); return ("Invalid action",400)
+    now=dt.datetime.now().isoformat(timespec='seconds')
+    c.execute("UPDATE expense_claims SET status=?,approved_by=?,approved_at=? WHERE id=?",(status,me['id'],now,eid))
+    if status=='APPROVED':
+        c.execute("INSERT INTO finance_logs(project_id,date,category,kind,description,amount,reference,user_id) VALUES(?,?,?,?,?,?,?,?)",(pid,row['date'],row['category'],'Expense',f"Company-paid: {row['description']} | Beneficiary: {row['beneficiary_name'] or row['beneficiary_user_id'] or ''}",row['amount'],row['receipt_name'] or '',me['id']))
+    c.commit(); c.close(); flash(f"💳 Expense claim {status.lower()}.","success"); return redirect(url_for("expense_claim",pid=pid))
+
+@app.route("/workflow/receipts/<path:filename>")
+@login_required
+def receipt_file(filename):
+    c=db(); me=current_user(); row=c.execute("SELECT * FROM expense_claims WHERE receipt_file=? AND (submitted_by=? OR beneficiary_user_id=? OR ?='SUPER_ADMIN' OR ?='Finance')",(filename,me['id'],me['id'],me['role'],me['department'])).fetchone(); c.close()
+    if not row:return ("Receipt not found or access denied",404)
+    return send_from_directory(WORKFLOW_FILES,filename,as_attachment=True,download_name=row['receipt_name'] or filename)
+
 @app.route("/uploads/user_photos/<path:filename>")
 def user_photo(filename):
     return send_from_directory(USER_PHOTOS, filename)
@@ -974,8 +1140,9 @@ def assign_head_office_staff(uid):
 @admin_required
 def users():
     c=db(); users=c.execute("SELECT u.*,o.name org_unit_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id ORDER BY u.full_name").fetchall(); projects=c.execute("SELECT * FROM projects ORDER BY name").fetchall(); units=c.execute("SELECT * FROM org_units WHERE active=1 ORDER BY sort_order,name").fetchall()
-    assign={u["id"]:[r["project_id"] for r in c.execute("SELECT project_id FROM user_projects WHERE user_id=?",(u["id"],)).fetchall()] for u in users}; c.close()
-    return render_template("users.html",users=users,projects=projects,assign=assign,org_units=units)
+    assign={u["id"]:[r["project_id"] for r in c.execute("SELECT project_id FROM user_projects WHERE user_id=?",(u["id"],)).fetchall()] for u in users}
+    project_assignments={u["id"]:[dict(r) for r in c.execute("SELECT pa.*,p.name project_name FROM project_assignments pa JOIN projects p ON p.id=pa.project_id WHERE pa.user_id=? AND pa.active=1 ORDER BY p.name",(u["id"],)).fetchall()] for u in users}; c.close()
+    return render_template("users.html",users=users,projects=projects,assign=assign,project_assignments=project_assignments,org_units=units)
 
 @app.route("/admin/users/add",methods=["POST"])
 @admin_required
@@ -990,7 +1157,7 @@ def add_user():
             raise ValueError("Staff photo is required. Upload a passport-style JPG, PNG or WEBP photo.")
         ext=secure_filename(photo.filename).rsplit('.',1)[-1].lower() if '.' in photo.filename else ''
         if ext not in ALLOWED_PHOTO_EXT: raise ValueError("Photo must be JPG, JPEG, PNG or WEBP.")
-        role="SUPER_ADMIN" if request.form.get("role")=="SUPER_ADMIN" else "STAFF"
+        role=request.form.get("role") if request.form.get("role") in ("STAFF","CONSULTANT","SUPER_ADMIN") else "STAFF"
         vals=(request.form["full_name"].strip(),request.form["username"].strip(),generate_password_hash(request.form["password"]),request.form["department"],request.form.get("position","Other"),request.form.get("location","").strip(),request.form.get("phone","").strip(),request.form.get("email","").strip(),role,request.form.get("org_unit_id") or None,request.form.get("reports_to_user_id") or None)
         for attempt in range(5):
             try:
@@ -1067,7 +1234,7 @@ def edit_user(uid):
     c=db(); u=c.execute("SELECT * FROM users WHERE id=?",(uid,)).fetchone()
     if not u: c.close(); flash("User not found.","error"); return redirect(url_for("users"))
     try:
-        role="SUPER_ADMIN" if request.form.get("role")=="SUPER_ADMIN" else "STAFF"
+        role=request.form.get("role") if request.form.get("role") in ("STAFF","CONSULTANT","SUPER_ADMIN") else "STAFF"
         username=request.form.get("username","").strip()
         if not username: raise ValueError("Username is required.")
         clash=c.execute("SELECT id FROM users WHERE username=? AND id<>?",(username,uid)).fetchone()
@@ -1096,9 +1263,14 @@ def toggle_user(uid):
 @app.route("/admin/users/<int:uid>/projects",methods=["POST"])
 @admin_required
 def assign_projects(uid):
-    c=db();c.execute("DELETE FROM user_projects WHERE user_id=?",(uid,))
-    for pid in request.form.getlist("project_ids"):c.execute("INSERT OR IGNORE INTO user_projects(user_id,project_id) VALUES(?,?)",(uid,pid))
-    c.commit();c.close();flash("🏗️ Project access updated.","success");return redirect(url_for("users"))
+    c=db()
+    c.execute("DELETE FROM user_projects WHERE user_id=?",(uid,))
+    c.execute("UPDATE project_assignments SET active=0 WHERE user_id=?",(uid,))
+    user=c.execute("SELECT position FROM users WHERE id=?",(uid,)).fetchone()
+    for pid in request.form.getlist("project_ids"):
+        c.execute("INSERT OR IGNORE INTO user_projects(user_id,project_id) VALUES(?,?)",(uid,pid))
+        c.execute("INSERT INTO project_assignments(user_id,project_id,position,active) VALUES(?,?,?,1) ON CONFLICT(user_id,project_id) DO UPDATE SET active=1",(uid,pid,(user['position'] if user else '') or ''))
+    c.commit();c.close();flash("🏗️ Project access and project assignment status updated.","success");return redirect(url_for("users"))
 
 @app.route("/admin/projects",methods=["GET","POST"])
 @admin_required
