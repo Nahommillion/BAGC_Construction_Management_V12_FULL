@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 BASE=os.path.dirname(os.path.abspath(__file__))
 # Keep application data outside the code directory when BAGC_DATA_DIR is configured.
 # This prevents redeploying/replacing the source from replacing the database.
-DATA_DIR=os.environ.get("BAGC_DATA_DIR", BASE).strip() or BASE
+DATA_DIR=os.environ.get("BAGC_DATA_DIR", "/data" if os.path.isdir("/data") and os.access("/data", os.W_OK) else BASE).strip() or BASE
 os.makedirs(DATA_DIR, exist_ok=True)
 DB=os.path.join(DATA_DIR,"bagc.db")
 UPLOADS=os.path.join(DATA_DIR,"uploads")
@@ -61,6 +61,8 @@ def make_staff_id(department, seq):
 
 
 def init_db():
+    if os.environ.get("RENDER") and not os.environ.get("BAGC_DATA_DIR"):
+        app.logger.warning("BAGC_DATA_DIR is not set on Render. SQLite will be ephemeral; configure a persistent disk or external database for permanent users/reports/BOQ.")
     c=db()
     c.executescript('''
     CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,position TEXT,location TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,photo_filename TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -82,6 +84,14 @@ def init_db():
     CREATE TABLE IF NOT EXISTS problems(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,problem TEXT,remark TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS fuel_logs(id INTEGER PRIMARY KEY,project_id INTEGER,machine_id INTEGER,date TEXT,opening_gauge REAL DEFAULT 0,fuel_received REAL DEFAULT 0,closing_gauge REAL DEFAULT 0,fuel_price REAL DEFAULT 0,reference TEXT,notes TEXT,user_id INTEGER,source TEXT DEFAULT 'Fuel Register');
     CREATE TABLE IF NOT EXISTS project_crews(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,group_name TEXT,position TEXT,name TEXT,employment TEXT,skill_level TEXT,working_hours REAL DEFAULT 0,hourly_rate REAL DEFAULT 0,notes TEXT,user_id INTEGER);
+    CREATE TABLE IF NOT EXISTS crew_group_capacity(id INTEGER PRIMARY KEY,group_name TEXT UNIQUE,foreman_qty REAL DEFAULT 0,dl_qty REAL DEFAULT 0,surveyor_qty REAL DEFAULT 0,data_collector_qty REAL DEFAULT 0,time_keeper_qty REAL DEFAULT 0,other_qty REAL DEFAULT 0,total_qty REAL DEFAULT 0,active INTEGER DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS activity_machines(id INTEGER PRIMARY KEY,activity_id INTEGER,machine_log_id INTEGER,machine_id INTEGER,hours REAL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS activity_manpower(id INTEGER PRIMARY KEY,activity_id INTEGER,manpower_id INTEGER,crew_id INTEGER,qty REAL DEFAULT 0,hours REAL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS activity_store(id INTEGER PRIMARY KEY,activity_id INTEGER,store_log_id INTEGER,material_id INTEGER,qty REAL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS activity_fuel(id INTEGER PRIMARY KEY,activity_id INTEGER,fuel_log_id INTEGER,litres REAL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS activity_finance(id INTEGER PRIMARY KEY,activity_id INTEGER,finance_log_id INTEGER,amount REAL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS crew_evaluations(id INTEGER PRIMARY KEY,activity_id INTEGER,crew_id INTEGER,evaluation TEXT,remarks TEXT,score REAL);
+    CREATE TABLE IF NOT EXISTS variation_alerts(id INTEGER PRIMARY KEY,project_id INTEGER,boq_id INTEGER,date TEXT,contract_qty REAL,previous_qty REAL,period_qty REAL,to_date_qty REAL,excess_qty REAL,status TEXT DEFAULT 'OPEN',message TEXT,created_by INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS crew_groups(id INTEGER PRIMARY KEY,name TEXT UNIQUE,active INTEGER DEFAULT 1);
     CREATE TABLE IF NOT EXISTS crew_positions(id INTEGER PRIMARY KEY,name TEXT UNIQUE,active INTEGER DEFAULT 1);
     CREATE TABLE IF NOT EXISTS report_settings(id INTEGER PRIMARY KEY,project_id INTEGER UNIQUE,contractor_role TEXT DEFAULT 'Main Contractor',phone TEXT,email TEXT,website TEXT,fax TEXT,address TEXT,logo_text TEXT);
@@ -107,6 +117,7 @@ def init_db():
     for col,typ in [('plate_no','TEXT'),('engine_no','TEXT'),('fuel_price','REAL DEFAULT 0')]:
         if col not in existing: c.execute(f"ALTER TABLE machines ADD COLUMN {col} {typ}")
     existing_mp=[r['name'] for r in c.execute("PRAGMA table_info(manpower)").fetchall()]
+    if 'crew_id' not in existing_mp: c.execute("ALTER TABLE manpower ADD COLUMN crew_id INTEGER")
     for col,typ in [('working_hours','REAL DEFAULT 8'),('hourly_rate','REAL DEFAULT 0'),('normal_ot_hours','REAL DEFAULT 0'),('normal_ot_rate','REAL DEFAULT 0'),('night_ot_hours','REAL DEFAULT 0'),('night_ot_rate','REAL DEFAULT 0'),('sunday_ot_hours','REAL DEFAULT 0'),('sunday_ot_rate','REAL DEFAULT 0'),('holiday_ot_hours','REAL DEFAULT 0'),('holiday_ot_rate','REAL DEFAULT 0'),('overtime_hours','REAL DEFAULT 0'),('overtime_rate','REAL DEFAULT 0')]:
         if col not in existing_mp: c.execute(f"ALTER TABLE manpower ADD COLUMN {col} {typ}")
     existing_ml=[r['name'] for r in c.execute("PRAGMA table_info(machine_logs)").fetchall()]
@@ -114,10 +125,11 @@ def init_db():
     existing_f=[r['name'] for r in c.execute("PRAGMA table_info(fuel_logs)").fetchall()]
     if 'source' not in existing_f: c.execute("ALTER TABLE fuel_logs ADD COLUMN source TEXT DEFAULT 'Fuel Register'")
     existing_m=[r['name'] for r in c.execute("PRAGMA table_info(machines)").fetchall()]
-    for col,typ in [('assignment_start_date','TEXT'),('assignment_start_hour','REAL DEFAULT 0'),('assignment_end_date','TEXT'),('assignment_end_hour','REAL'),('lifecycle_status',"TEXT DEFAULT 'ACTIVE'"),('assignment_signed_by','INTEGER'),('assignment_ended_by','INTEGER'),('assignment_ended_at','TEXT')]:
+    for col,typ in [('assignment_start_date','TEXT'),('assignment_start_hour','REAL DEFAULT 0'),('assignment_end_date','TEXT'),('assignment_end_hour','REAL'),('total_signed_hours','REAL DEFAULT 0'),('hours_used','REAL DEFAULT 0'),('lifecycle_status',"TEXT DEFAULT 'ACTIVE'"),('assignment_signed_by','INTEGER'),('assignment_ended_by','INTEGER'),('assignment_ended_at','TEXT')]:
         if col not in existing_m: c.execute(f"ALTER TABLE machines ADD COLUMN {col} {typ}")
     for g in CREW_GROUPS: c.execute("INSERT OR IGNORE INTO crew_groups(name) VALUES(?)",(g,))
     for pos in POSITION_CATALOG: c.execute("INSERT OR IGNORE INTO crew_positions(name) VALUES(?)",(pos,))
+    for g in CREW_GROUPS: c.execute("INSERT OR IGNORE INTO crew_group_capacity(group_name) VALUES(?)",(g,))
     existing_p=[r['name'] for r in c.execute("PRAGMA table_info(projects)").fetchall()]
     for col,typ in [('contractor_role',"TEXT DEFAULT 'Main Contractor'"),('contract_sign_date','TEXT'),('commencement_date','TEXT'),('contract_end_date','TEXT'),('contract_days','INTEGER DEFAULT 0'),('planned_income','REAL DEFAULT 0'),('planned_physical_pct','REAL DEFAULT 0'),('contract_value','REAL DEFAULT 0')]:
         if col not in existing_p: c.execute(f"ALTER TABLE projects ADD COLUMN {col} {typ}")
@@ -221,6 +233,7 @@ def build_report_snapshot(pid,start,end,scope='ALL'):
     if scope in ('ALL','FINANCE'):
         out['finance']=[dict(r) for r in c.execute("SELECT * FROM finance_logs WHERE project_id=? AND date BETWEEN ? AND ? ORDER BY date,id",(pid,start.isoformat(),end.isoformat())).fetchall()]
     if scope in ('ALL','PROBLEMS'):
+        out['variations']=[dict(r) for r in c.execute("SELECT va.*,b.item_no,b.description,b.unit FROM variation_alerts va JOIN boq b ON b.id=va.boq_id WHERE va.project_id=? AND va.date BETWEEN ? AND ? ORDER BY va.date,va.id",(pid,start.isoformat(),end.isoformat())).fetchall()]
         out['problems']=[dict(r) for r in c.execute("SELECT * FROM problems WHERE project_id=? AND date BETWEEN ? AND ? ORDER BY date,id",(pid,start.isoformat(),end.isoformat())).fetchall()]
     # summary totals, always useful for every saved report
     out['summary']={
@@ -351,82 +364,144 @@ def project(pid):
     c.close()
     return render_template("project.html",p=p,boq_count=boq_count,machine_count=machine_count,mat_count=mat_count,actual_income=actual_income,actual_expense=actual_expense,contract_value=contract_value,physical_pct=physical_pct,schedule_pct=schedule_pct,time_variance_pct=time_variance_pct,days_remaining=days_remaining,planned_income=planned_income,income_variance=income_variance,crew_count=crew_count)
 
+
+def variation_check(c,pid,boq_id,additional_qty,d):
+    b=c.execute("SELECT * FROM boq WHERE id=? AND project_id=?",(boq_id,pid)).fetchone()
+    if not b: raise ValueError("Selected BOQ item was not found in this project.")
+    prev=c.execute("SELECT COALESCE(SUM(quantity),0) FROM daily_work WHERE boq_id=? AND date<?",(boq_id,d)).fetchone()[0]
+    period=c.execute("SELECT COALESCE(SUM(quantity),0) FROM daily_work WHERE boq_id=? AND date BETWEEN ? AND ?",(boq_id,d,d)).fetchone()[0]
+    tod=prev+period
+    new_tod=tod+additional_qty
+    excess=max(new_tod-(b['contract_qty'] or 0),0)
+    if excess>0:
+        msg=f"Variation Order required: BOQ {b['item_no']} will exceed contract quantity by {excess:g} {b['unit']}."
+        c.execute("INSERT INTO variation_alerts(project_id,boq_id,date,contract_qty,previous_qty,period_qty,to_date_qty,excess_qty,status,message,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,boq_id,d,b['contract_qty'] or 0,prev,period, new_tod, excess,'OPEN',msg,current_user()['id']))
+        return msg
+    return None
+
+@app.errorhandler(Exception)
+def application_error(error):
+    # Never expose a generic blank 500 to field staff; log the actual exception and return a useful message.
+    import traceback
+    app.logger.error("Unhandled BAGC application error: %s\n%s", error, traceback.format_exc())
+    if request.path.startswith('/projects/'):
+        flash("⚠️ Could not save this entry. Nothing was intentionally deleted. Please check the fields and try again. Error: "+str(error),"error")
+        return redirect(request.referrer or url_for('dashboard'))
+    return ("Internal Server Error: "+str(error),500)
+
 @app.route("/projects/<int:pid>/daily",methods=["GET","POST"])
 @login_required
 def daily(pid):
     u=current_user()
     if not allowed_project(pid) or (u["role"]!="SUPER_ADMIN" and u["position"]!="Office Engineer"):
-        flash("🚫 Only the assigned Office Engineer can prepare the Daily Report. Super Admin may approve/enter when required.","error");return redirect(url_for("project",pid=pid))
+        flash("🚫 Only the assigned Office Engineer can prepare the Daily Report. Super Admin has override access.","error")
+        return redirect(url_for("project",pid=pid))
     c=db(); default_date=request.args.get("date",dt.date.today().isoformat())
-    if request.method=="POST":
-        d=request.form.get("date") or default_date
-        # BOQ work
-        if request.form.get("section")=="boq":
-            c.execute("INSERT INTO daily_work(project_id,date,boq_id,quantity,station_from,station_to,notes,user_id) VALUES(?,?,?,?,?,?,?,?)",(pid,d,request.form["boq_id"],parse_float(request.form["quantity"]),request.form.get("station_from",""),request.form.get("station_to",""),request.form.get("notes",""),current_user()["id"]))
-            flash("📐 BOQ work registered — income = quantity × BOQ rate.","success")
-        elif request.form.get("section")=="machinery":
-            mid=request.form["machine_id"];active_assignment=c.execute("SELECT id FROM machine_assignments WHERE machine_id=? AND project_id=? AND status='ACTIVE' ORDER BY id DESC LIMIT 1",(mid,pid)).fetchone()
-            if not active_assignment: raise ValueError("Machine has no active signed assignment. Machinery Admin must sign a new assignment first.")
-            c.execute("INSERT INTO machine_logs(project_id,machine_id,date,work_hours,idle_hours,idle_reason,idle_payable,down_hours,down_reason,opening_gauge,fuel_received,closing_gauge,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,mid,d,parse_float(request.form["work_hours"]),parse_float(request.form["idle_hours"]),request.form.get("idle_reason",""),1 if request.form.get('idle_payable')=='1' else 0,parse_float(request.form["down_hours"]),request.form.get("down_reason",""),parse_float(request.form["opening_gauge"]),parse_float(request.form["fuel_received"]),parse_float(request.form["closing_gauge"]),request.form.get("notes",""),current_user()["id"]))
-            if any(parse_float(request.form.get(k)) for k in ('fuel_received','opening_gauge','closing_gauge')):
-                c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id,source) SELECT ?,?,?,?, ?,?,?,?, ?,?, 'Daily Report'",(pid,mid,d,parse_float(request.form.get('opening_gauge')),parse_float(request.form.get('fuel_received')),parse_float(request.form.get('closing_gauge')),0,'DR-'+d,request.form.get('notes',''),current_user()['id']))
-            flash("🚜 Machinery daily time saved and linked to Fuel Report.","success")
-        elif request.form.get("section")=="manpower":
-            c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,working_hours,hourly_rate,daily_rate,normal_ot_hours,normal_ot_rate,night_ot_hours,night_ot_rate,sunday_ot_hours,sunday_ot_rate,holiday_ot_hours,holiday_ot_rate,overtime_hours,overtime_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,d,request.form["name"],request.form["employment"],request.form["position"],parse_float(request.form.get("present")),parse_float(request.form.get("working_hours",8)),parse_float(request.form.get("hourly_rate")),parse_float(request.form.get("daily_rate")),parse_float(request.form.get("normal_ot_hours")),parse_float(request.form.get("normal_ot_rate")),parse_float(request.form.get("night_ot_hours")),parse_float(request.form.get("night_ot_rate")),parse_float(request.form.get("sunday_ot_hours")),parse_float(request.form.get("sunday_ot_rate")),parse_float(request.form.get("holiday_ot_hours")),parse_float(request.form.get("holiday_ot_rate")),0,0,request.form.get("notes",""),current_user()["id"]))
-            flash("👷 Manpower daily attendance saved.","success")
-        elif request.form.get("section")=="store":
-            physical=request.form.get("physical_balance");physical=parse_float(physical) if physical not in (None,"") else None
-            c.execute("INSERT INTO store_logs(project_id,material_id,date,received,issued,unit_cost,physical_balance,reference,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?)",(pid,request.form["material_id"],d,parse_float(request.form["received"]),parse_float(request.form["issued"]),parse_float(request.form["unit_cost"]),physical,request.form.get("reference",""),request.form.get("notes",""),current_user()["id"]))
-            flash("📦 Store receipt/issue saved.","success")
-        elif request.form.get("section")=="finance":
-            c.execute("INSERT INTO finance_logs(project_id,date,category,kind,description,amount,reference,user_id) VALUES(?,?,?,?,?,?,?,?)",(pid,d,request.form["category"],request.form["kind"],request.form["description"],parse_float(request.form["amount"]),request.form.get("reference",""),current_user()["id"]))
-            flash("💰 Financial entry saved.","success")
-        elif request.form.get("section")=="activity":
-            c.execute("INSERT INTO daily_activities(project_id,date,boq_id,work_type,executed_qty,machine_id,machine_hours,manpower_position,manpower_qty,manpower_hours,material_id,material_qty,remarks,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,d,request.form.get("boq_id") or None,request.form.get("work_type",""),parse_float(request.form.get("executed_qty")),request.form.get("machine_id") or None,parse_float(request.form.get("machine_hours")),request.form.get("manpower_position",""),parse_float(request.form.get("manpower_qty")),parse_float(request.form.get("manpower_hours")),request.form.get("material_id") or None,parse_float(request.form.get("material_qty")),request.form.get("remarks",""),current_user()["id"]))
-            flash("🏗️ Detailed work activity registered.","success")
-        elif request.form.get("section")=="problem":
-            c.execute("INSERT INTO problems(project_id,date,problem,remark,user_id) VALUES(?,?,?,?,?)",(pid,d,request.form.get("problem",""),request.form.get("remark",""),current_user()["id"]))
-            flash("⚠️ Problem and corrective remark saved.","success")
-        c.commit()
-        try: save_report(pid,'DAILY',dt.date.fromisoformat(d),dt.date.fromisoformat(d),'ALL',current_user()['id'])
-        except Exception: pass
-    boq=c.execute("SELECT * FROM boq WHERE project_id=? ORDER BY item_no",(pid,)).fetchall();machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall();materials=c.execute("SELECT * FROM materials WHERE project_id=? AND active=1 ORDER BY category,name",(pid,)).fetchall()
-    recent=c.execute("SELECT dw.*,b.item_no,b.description,b.unit,b.rate,dw.quantity*b.rate amount FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=? ORDER BY dw.date DESC,dw.id DESC LIMIT 20",(pid,)).fetchall()
+    try:
+        if request.method=="POST":
+            d=request.form.get("date") or default_date; section=request.form.get("section")
+            if section=="boq":
+                qty=parse_float(request.form.get("quantity")); bid=int(request.form["boq_id"]); msg=variation_check(c,pid,bid,qty,d)
+                c.execute("INSERT INTO daily_work(project_id,date,boq_id,quantity,station_from,station_to,notes,user_id) VALUES(?,?,?,?,?,?,?,?)",(pid,d,bid,qty,request.form.get("station_from",""),request.form.get("station_to",""),request.form.get("notes",""),u["id"]))
+                flash("📐 BOQ work registered — income = quantity × BOQ rate.","success")
+                if msg: flash("🚨 "+msg,"error")
+            elif section=="activity":
+                bid=request.form.get("boq_id") or None; qty=parse_float(request.form.get("executed_qty"))
+                if bid and qty>0:
+                    msg=variation_check(c,pid,int(bid),qty,d)
+                    c.execute("INSERT INTO daily_work(project_id,date,boq_id,quantity,station_from,station_to,notes,user_id) VALUES(?,?,?,?,?,?,?,?)",(pid,d,int(bid),qty,request.form.get("station_from",""),request.form.get("station_to",""),request.form.get("remarks",""),u["id"]))
+                    if msg: flash("🚨 "+msg,"error")
+                c.execute("INSERT INTO daily_activities(project_id,date,boq_id,work_type,executed_qty,machine_id,machine_hours,manpower_position,manpower_qty,manpower_hours,material_id,material_qty,remarks,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,d,bid,request.form.get("work_type",""),qty,None,0,"",0,0,None,0,request.form.get("remarks",""),u["id"]))
+                aid=c.execute("SELECT last_insert_rowid()").fetchone()[0]
+                for lid in request.form.getlist("machine_log_ids"):
+                    if lid: c.execute("INSERT INTO activity_machines(activity_id,machine_log_id,machine_id,hours) SELECT ?,id,machine_id,work_hours+idle_hours+down_hours FROM machine_logs WHERE id=? AND project_id=?",(aid,int(lid),pid))
+                for mid in request.form.getlist("manpower_ids"):
+                    if mid: c.execute("INSERT INTO activity_manpower(activity_id,manpower_id,crew_id,qty,hours) SELECT ?,id,crew_id,present,working_hours FROM manpower WHERE id=? AND project_id=?",(aid,int(mid),pid))
+                for sid in request.form.getlist("store_log_ids"):
+                    if sid: c.execute("INSERT INTO activity_store(activity_id,store_log_id,material_id,qty) SELECT ?,id,material_id,issued FROM store_logs WHERE id=? AND project_id=?",(aid,int(sid),pid))
+                for fid in request.form.getlist("fuel_log_ids"):
+                    if fid: c.execute("INSERT INTO activity_fuel(activity_id,fuel_log_id,litres) SELECT ?,id,opening_gauge+fuel_received-closing_gauge FROM fuel_logs WHERE id=? AND project_id=?",(aid,int(fid),pid))
+                # Correct activity_fuel machine-independent insert after the insert above if schema mismatch is encountered.
+                c.execute("DELETE FROM activity_fuel WHERE activity_id=? AND fuel_log_id NOT IN (SELECT id FROM fuel_logs WHERE project_id=?)",(aid,pid))
+                for xid in request.form.getlist("finance_log_ids"):
+                    if xid: c.execute("INSERT INTO activity_finance(activity_id,finance_log_id,amount) SELECT ?,id,amount FROM finance_logs WHERE id=? AND project_id=?",(aid,int(xid),pid))
+                for crewid in request.form.getlist("crew_ids"):
+                    if crewid: c.execute("INSERT INTO crew_evaluations(activity_id,crew_id,evaluation,remarks,score) VALUES(?,?,?,?,?)",(aid,int(crewid),request.form.get("evaluation",""),request.form.get("evaluation_remarks",""),parse_float(request.form.get("score"))))
+                flash("🏗️ Daily work package saved with all selected machinery, manpower, fuel, store, finance and crew links.","success")
+            elif section=="problem":
+                c.execute("INSERT INTO problems(project_id,date,problem,remark,user_id) VALUES(?,?,?,?,?)",(pid,d,request.form.get("problem",""),request.form.get("remark",""),u["id"])); flash("⚠️ Problem and corrective action saved.","success")
+            c.commit()
+            try: save_report(pid,'DAILY',dt.date.fromisoformat(d),dt.date.fromisoformat(d),'ALL',u['id'])
+            except Exception as e: app.logger.warning("Daily snapshot failed: %s",e)
+            default_date=d
+    except Exception as e:
+        c.rollback(); flash("Daily report save failed: "+str(e),"error")
+    boq=c.execute("SELECT * FROM boq WHERE project_id=? ORDER BY series,item_no",(pid,)).fetchall()
+    machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall()
+    materials=c.execute("SELECT * FROM materials WHERE project_id=? AND active=1 ORDER BY category,name",(pid,)).fetchall()
+    crews=c.execute("SELECT * FROM project_crews WHERE project_id=? ORDER BY group_name,position,name",(pid,)).fetchall()
     linked_machines=c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? AND ml.date=? ORDER BY ml.id",(pid,default_date)).fetchall()
+    linked_manpower=c.execute("SELECT mp.*,pc.group_name,pc.position AS crew_position,pc.name AS crew_name FROM manpower mp LEFT JOIN project_crews pc ON pc.id=mp.crew_id WHERE mp.project_id=? AND mp.date=? ORDER BY mp.id",(pid,default_date)).fetchall()
     linked_fuel=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,m.engine_no FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? AND f.date=? ORDER BY f.id",(pid,default_date)).fetchall()
     linked_store=c.execute("SELECT sl.*,m.name,m.unit FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? AND sl.date=? ORDER BY sl.id",(pid,default_date)).fetchall()
+    linked_finance=c.execute("SELECT * FROM finance_logs WHERE project_id=? AND date=? ORDER BY id",(pid,default_date)).fetchall()
+    recent=c.execute("SELECT dw.*,b.item_no,b.description,b.unit,b.rate,dw.quantity*b.rate amount FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=? ORDER BY dw.date DESC,dw.id DESC LIMIT 30",(pid,)).fetchall()
+    activities=c.execute("SELECT a.*,b.item_no,b.description FROM daily_activities a LEFT JOIN boq b ON b.id=a.boq_id WHERE a.project_id=? AND a.date=? ORDER BY a.id DESC",(pid,default_date)).fetchall()
+    alerts=c.execute("SELECT va.*,b.item_no,b.description FROM variation_alerts va JOIN boq b ON b.id=va.boq_id WHERE va.project_id=? ORDER BY va.id DESC LIMIT 20",(pid,)).fetchall()
     c.close()
-    return render_template("daily.html",pid=pid,date=default_date,boq=boq,machines=machines,materials=materials,recent=recent,linked_machines=linked_machines,linked_fuel=linked_fuel,linked_store=linked_store)
-
+    return render_template("daily.html",pid=pid,date=default_date,boq=boq,machines=machines,materials=materials,crews=crews,recent=recent,activities=activities,alerts=alerts,linked_machines=linked_machines,linked_manpower=linked_manpower,linked_fuel=linked_fuel,linked_store=linked_store,linked_finance=linked_finance)
 
 @app.route("/projects/<int:pid>/machinery/assign",methods=['POST'])
 @login_required
 def assign_machine(pid):
     if not allowed_project(pid) or not can_module('Machinery'): return redirect(url_for('project',pid=pid))
-    c=db(); mid=int(request.form['machine_id']); m=c.execute('SELECT * FROM machines WHERE id=? AND project_id=?',(mid,pid)).fetchone()
-    if not m: c.close(); return ('Machine not found',404)
-    c.execute("UPDATE machines SET lifecycle_status='ACTIVE',assignment_start_date=?,assignment_start_hour=?,assignment_end_date=NULL,assignment_end_hour=NULL,assignment_signed_by=?,assignment_ended_by=NULL,assignment_ended_at=NULL WHERE id=?",(request.form['start_date'],parse_float(request.form.get('start_hour')),current_user()['id'],mid))
-    c.execute("INSERT INTO machine_assignments(machine_id,project_id,start_date,start_hour,status,assigned_by,notes) VALUES(?,?,?,?,?,?,?)",(mid,pid,request.form['start_date'],parse_float(request.form.get('start_hour')), 'ACTIVE',current_user()['id'],request.form.get('notes',''))); c.commit(); c.close(); flash('✍️ Machinery assignment signed and activated.','success'); return redirect(url_for('machinery',pid=pid))
+    c=db()
+    try:
+        mid=int(request.form['machine_id']); m=c.execute('SELECT * FROM machines WHERE id=? AND project_id=?',(mid,pid)).fetchone()
+        if not m: raise ValueError('Machine not found.')
+        # Close any old active assignment before creating a new signed assignment.
+        c.execute("UPDATE machine_assignments SET status='ENDED',end_date=COALESCE(end_date,start_date),ended_by=?,ended_at=CURRENT_TIMESTAMP WHERE machine_id=? AND project_id=? AND status='ACTIVE'",(current_user()['id'],mid,pid))
+        total=parse_float(request.form.get('total_hours'))
+        if total<=0: raise ValueError('Total signed hours must be greater than zero.')
+        start_date=request.form['start_date']; start_hour=parse_float(request.form.get('start_hour'))
+        end_meter=start_hour+total
+        c.execute("UPDATE machines SET lifecycle_status='ACTIVE',assignment_start_date=?,assignment_start_hour=?,assignment_end_date=NULL,assignment_end_hour=?,total_signed_hours=?,hours_used=0,assignment_signed_by=?,assignment_ended_by=NULL,assignment_ended_at=NULL WHERE id=?",(start_date,start_hour,end_meter,total,current_user()['id'],mid))
+        c.execute("INSERT INTO machine_assignments(machine_id,project_id,start_date,start_hour,end_date,end_hour,status,assigned_by,notes) VALUES(?,?,?,?,?,?,?,?,?)",(mid,pid,start_date,start_hour,None,end_meter,'ACTIVE',current_user()['id'],request.form.get('notes','')))
+        c.commit(); flash(f'✍️ Assignment signed for {total:g} hours. Ending meter will be {end_meter:g}. The actual ending date is calculated automatically when logged hours reach the signed total.','success')
+    except Exception as e:
+        c.rollback(); flash('Machinery assignment failed: '+str(e),'error')
+    c.close(); return redirect(url_for('machinery',pid=pid))
 
 @app.route("/projects/<int:pid>/machinery/end",methods=['POST'])
 @login_required
 def end_machine_assignment(pid):
     if not allowed_project(pid) or not can_module('Machinery'): return redirect(url_for('project',pid=pid))
-    c=db(); mid=int(request.form['machine_id']); now=dt.datetime.now().isoformat(timespec='seconds')
-    c.execute("UPDATE machines SET lifecycle_status='ENDED',assignment_end_date=?,assignment_end_hour=?,assignment_ended_by=?,assignment_ended_at=? WHERE id=? AND project_id=?",(request.form['end_date'],parse_float(request.form.get('end_hour')),current_user()['id'],now,mid,pid))
-    c.execute("UPDATE machine_assignments SET end_date=?,end_hour=?,status='ENDED',ended_by=?,ended_at=? WHERE machine_id=? AND project_id=? AND status='ACTIVE'",(request.form['end_date'],parse_float(request.form.get('end_hour')),current_user()['id'],now,mid,pid)); c.commit(); c.close(); flash('🛑 Machine assignment ended. A new signed assignment is required before reuse.','success'); return redirect(url_for('machinery',pid=pid))
+    c=db()
+    try:
+        mid=int(request.form['machine_id']); end_date=request.form.get('end_date') or dt.date.today().isoformat(); end_hour=parse_float(request.form.get('end_hour'))
+        c.execute("UPDATE machines SET lifecycle_status='ENDED',assignment_end_date=?,assignment_end_hour=?,assignment_ended_by=?,assignment_ended_at=? WHERE id=? AND project_id=?",(end_date,end_hour,current_user()['id'],dt.datetime.now().isoformat(timespec='seconds'),mid,pid))
+        c.execute("UPDATE machine_assignments SET end_date=?,end_hour=?,status='ENDED',ended_by=?,ended_at=? WHERE machine_id=? AND project_id=? AND status='ACTIVE'",(end_date,end_hour,current_user()['id'],dt.datetime.now().isoformat(timespec='seconds'),mid,pid))
+        c.commit(); flash('🛑 Machine assignment ended. A new signed assignment is required before reuse.','success')
+    except Exception as e: c.rollback(); flash('Could not end assignment: '+str(e),'error')
+    c.close(); return redirect(url_for('machinery',pid=pid))
 
 @app.route("/projects/<int:pid>/fuel",methods=["GET","POST"])
 @login_required
 def fuel(pid):
-    if not allowed_project(pid) or not can_module("Machinery"): return redirect(url_for("project",pid=pid))
+    if not allowed_project(pid) or not can_module("Machinery"): flash("🚫 Machinery/Fuel access is not assigned.","error"); return redirect(url_for("project",pid=pid))
     c=db()
-    if request.method=="POST":
-        c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id,source) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form["machine_id"],request.form["date"],parse_float(request.form.get("opening_gauge")),parse_float(request.form.get("fuel_received")),parse_float(request.form.get("closing_gauge")),parse_float(request.form.get("fuel_price")),request.form.get("reference",""),request.form.get("notes",""),current_user()["id"])); c.commit(); flash("⛽ Fuel log saved.","success")
+    try:
+        if request.method=="POST":
+            mid=int(request.form["machine_id"]); d=request.form["date"]
+            if not c.execute("SELECT 1 FROM machines WHERE id=? AND project_id=? AND active=1",(mid,pid)).fetchone(): raise ValueError('Selected machine is not active in this project.')
+            vals=(pid,mid,d,parse_float(request.form.get("opening_gauge")),parse_float(request.form.get("fuel_received")),parse_float(request.form.get("closing_gauge")),parse_float(request.form.get("fuel_price")),request.form.get("reference",""),request.form.get("notes",""),current_user()["id"],"Fuel Register")
+            c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id,source) VALUES(?,?,?,?,?,?,?,?,?,?,?)",vals)
+            c.commit(); flash("⛽ Fuel log saved.","success")
+    except Exception as e:
+        c.rollback(); flash("Fuel log failed: "+str(e),"error")
     machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall()
     logs=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,(f.opening_gauge+f.fuel_received-f.closing_gauge) consumption,(f.fuel_received*f.fuel_price) cost,COALESCE((SELECT SUM(ml.work_hours) FROM machine_logs ml WHERE ml.machine_id=f.machine_id AND ml.date=f.date),0) work_hours,COALESCE((SELECT SUM(ml.work_hours) FROM machine_logs ml WHERE ml.machine_id=f.machine_id AND ml.date=f.date),0)*m.expected_fuel expected_consumption FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? ORDER BY f.date DESC,f.id DESC LIMIT 100",(pid,)).fetchall()
-    total_l=c.execute("SELECT COALESCE(SUM(fuel_received),0) FROM fuel_logs WHERE project_id=?",(pid,)).fetchone()[0]
-    total_cost=c.execute("SELECT COALESCE(SUM(fuel_received*fuel_price),0) FROM fuel_logs WHERE project_id=?",(pid,)).fetchone()[0]
+    total_l=c.execute("SELECT COALESCE(SUM(fuel_received),0) FROM fuel_logs WHERE project_id=?",(pid,)).fetchone()[0]; total_cost=c.execute("SELECT COALESCE(SUM(fuel_received*fuel_price),0) FROM fuel_logs WHERE project_id=?",(pid,)).fetchone()[0]
     c.close(); return render_template("fuel.html",pid=pid,machines=machines,logs=logs,total_l=total_l,total_cost=total_cost,today=dt.date.today().isoformat())
 
 @app.route("/projects/<int:pid>/performance",methods=["GET","POST"])
@@ -445,10 +520,21 @@ def print_report(pid):
     date=request.args.get("date",dt.date.today().isoformat()); c=db()
     p=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone(); settings=c.execute("SELECT * FROM report_settings WHERE project_id=?",(pid,)).fetchone()
     boq=c.execute("SELECT b.item_no,b.description,b.unit,b.rate,COALESCE(SUM(dw.quantity),0) qty FROM boq b LEFT JOIN daily_work dw ON dw.boq_id=b.id AND dw.date=? WHERE b.project_id=? GROUP BY b.id ORDER BY b.item_no",(date,pid)).fetchall()
-    activities=c.execute("SELECT a.*,b.item_no,b.description,m.machine_type,m.code,m.plate_no,mat.name material,mat.unit material_unit FROM daily_activities a LEFT JOIN boq b ON b.id=a.boq_id LEFT JOIN machines m ON m.id=a.machine_id LEFT JOIN materials mat ON mat.id=a.material_id WHERE a.project_id=? AND a.date=? ORDER BY a.id",(pid,date)).fetchall()
+    activities=c.execute("SELECT a.*,b.item_no,b.description FROM daily_activities a LEFT JOIN boq b ON b.id=a.boq_id WHERE a.project_id=? AND a.date=? ORDER BY a.id",(pid,date)).fetchall()
+    activity_links={}
+    for a in activities:
+        aid=a['id']
+        activity_links[aid]={
+            'machines':c.execute("SELECT am.*,m.machine_type,m.code,m.plate_no FROM activity_machines am JOIN machines m ON m.id=am.machine_id WHERE am.activity_id=?",(aid,)).fetchall(),
+            'manpower':c.execute("SELECT ap.*,mp.name,mp.position,pc.group_name,pc.name crew_name FROM activity_manpower ap JOIN manpower mp ON mp.id=ap.manpower_id LEFT JOIN project_crews pc ON pc.id=ap.crew_id WHERE ap.activity_id=?",(aid,)).fetchall(),
+            'store':c.execute("SELECT ast.*,m.name,m.unit FROM activity_store ast JOIN materials m ON m.id=ast.material_id WHERE ast.activity_id=?",(aid,)).fetchall(),
+            'fuel':c.execute("SELECT af.*,f.opening_gauge,f.fuel_received,f.closing_gauge,m.machine_type,m.code FROM activity_fuel af JOIN fuel_logs f ON f.id=af.fuel_log_id JOIN machines m ON m.id=f.machine_id WHERE af.activity_id=?",(aid,)).fetchall(),
+            'finance':c.execute("SELECT ax.*,f.kind,f.description FROM activity_finance ax JOIN finance_logs f ON f.id=ax.finance_log_id WHERE ax.activity_id=?",(aid,)).fetchall(),
+            'evaluations':c.execute("SELECT ce.*,pc.name,pc.position,pc.group_name FROM crew_evaluations ce JOIN project_crews pc ON pc.id=ce.crew_id WHERE ce.activity_id=?",(aid,)).fetchall()
+        }
     machines=c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.ownership FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? AND ml.date=?",(pid,date)).fetchall()
     manpower=c.execute("SELECT * FROM manpower WHERE project_id=? AND date=?",(pid,date)).fetchall(); store=c.execute("SELECT sl.*,m.name,m.unit FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? AND sl.date=?",(pid,date)).fetchall(); problems=c.execute("SELECT * FROM problems WHERE project_id=? AND date=?",(pid,date)).fetchall(); c.close()
-    return render_template("print_report.html",p=p,settings=settings,date=date,boq=boq,activities=activities,machines=machines,manpower=manpower,store=store,problems=problems)
+    return render_template("print_report.html",p=p,settings=settings,date=date,boq=boq,activities=activities,activity_links=activity_links,machines=machines,manpower=manpower,store=store,problems=problems)
 
 @app.route("/projects/<int:pid>/machinery",methods=["GET","POST"])
 @login_required
@@ -464,20 +550,33 @@ def machinery(pid):
         elif action=="log":
             active_assignment=c.execute("SELECT id FROM machine_assignments WHERE machine_id=? AND project_id=? AND status='ACTIVE' ORDER BY id DESC LIMIT 1",(request.form['machine_id'],pid)).fetchone()
             if not active_assignment: raise ValueError('Machine has no active signed assignment. Machinery Admin must sign a new start date/hour first.')
-            c.execute("INSERT INTO machine_logs(project_id,machine_id,date,work_hours,idle_hours,idle_reason,idle_payable,down_hours,down_reason,opening_gauge,fuel_received,closing_gauge,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form["machine_id"],request.form["date"],parse_float(request.form.get("work_hours")),parse_float(request.form.get("idle_hours")),request.form.get("idle_reason",""),1 if request.form.get("idle_payable")=="1" else 0,parse_float(request.form.get("down_hours")),request.form.get("down_reason",""),parse_float(request.form.get("opening_gauge")),parse_float(request.form.get("fuel_received")),parse_float(request.form.get("closing_gauge")),request.form.get("notes",""),current_user()["id"]))
-            flash("⏱️ Machine hours / idle / down / fuel log saved.","success")
-        c.commit()
+            vals=(pid,request.form["machine_id"],request.form["date"],parse_float(request.form.get("work_hours")),parse_float(request.form.get("idle_hours")),request.form.get("idle_reason",""),1 if request.form.get("idle_payable")=="1" else 0,parse_float(request.form.get("down_hours")),request.form.get("down_reason",""),parse_float(request.form.get("opening_gauge")),parse_float(request.form.get("fuel_received")),parse_float(request.form.get("closing_gauge")),request.form.get("notes",""),current_user()["id"])
+            c.execute("INSERT INTO machine_logs(project_id,machine_id,date,work_hours,idle_hours,idle_reason,idle_payable,down_hours,down_reason,opening_gauge,fuel_received,closing_gauge,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",vals)
+            if any(parse_float(request.form.get(k)) for k in ("opening_gauge","fuel_received","closing_gauge")):
+                mp=c.execute("SELECT fuel_price FROM machines WHERE id=?",(request.form['machine_id'],)).fetchone()
+                c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id,source) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form['machine_id'],request.form['date'],parse_float(request.form.get('opening_gauge')),parse_float(request.form.get('fuel_received')),parse_float(request.form.get('closing_gauge')),mp['fuel_price'] if mp else 0,'MCH-'+request.form['date'],request.form.get('notes',''),current_user()['id'],'Machinery Log'))
+            used=parse_float(request.form.get("work_hours"))+parse_float(request.form.get("idle_hours"))+parse_float(request.form.get("down_hours"))
+            ma=c.execute("SELECT id,total_signed_hours,hours_used FROM machine_assignments WHERE machine_id=? AND project_id=? AND status='ACTIVE' ORDER BY id DESC LIMIT 1",(request.form['machine_id'],pid)).fetchone()
+            if ma:
+                new_used=(ma['hours_used'] or 0)+used; c.execute("UPDATE machine_assignments SET status=CASE WHEN total_signed_hours>0 AND ?>=total_signed_hours THEN 'ENDED' ELSE status END,end_date=CASE WHEN total_signed_hours>0 AND ?>=total_signed_hours THEN ? ELSE end_date END,end_hour=CASE WHEN total_signed_hours>0 AND ?>=total_signed_hours THEN ? ELSE end_hour END WHERE id=?",(new_used,new_used,request.form['date'],parse_float(request.form.get('closing_gauge')),ma['id']))
+                c.execute("UPDATE machines SET hours_used=?,lifecycle_status=CASE WHEN total_signed_hours>0 AND ?>=total_signed_hours THEN 'ENDED' ELSE lifecycle_status END,assignment_end_date=CASE WHEN total_signed_hours>0 AND ?>=total_signed_hours THEN ? ELSE assignment_end_date END WHERE id=?",(new_used,new_used,new_used,request.form['date'],request.form['machine_id']))
+            flash("⏱️ Machine hours / idle / down / gauge saved successfully.","success")
+        try: c.commit()
+        except Exception as e: c.rollback(); flash("Machinery save failed: "+str(e),"error")
     machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall();assignments=c.execute("SELECT ma.*,m.machine_type,m.code,m.plate_no FROM machine_assignments ma JOIN machines m ON m.id=ma.machine_id WHERE ma.project_id=? ORDER BY ma.id DESC LIMIT 100",(pid,)).fetchall();logs=c.execute("SELECT ml.*,m.machine_type,m.code,m.ownership,m.hourly_rate,m.expected_fuel,((ml.work_hours + CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel,(ml.work_hours*m.expected_fuel) expected_fuel_qty,CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN ml.work_hours*100.0/(ml.work_hours+ml.idle_hours+ml.down_hours) ELSE 0 END utilization,CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN (ml.work_hours+ml.idle_hours)*100.0/(ml.work_hours+ml.idle_hours+ml.down_hours) ELSE 0 END availability,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge)-(ml.work_hours*m.expected_fuel) fuel_discrepancy FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? ORDER BY ml.date DESC,ml.id DESC LIMIT 50",(pid,)).fetchall();c.close()
     return render_template("machinery.html",pid=pid,machines=machines,assignments=assignments,logs=logs)
 
 @app.route("/projects/<int:pid>/manpower",methods=["GET","POST"])
 @login_required
 def manpower(pid):
-    if not allowed_project(pid) or not can_module("HR"):flash("🚫 HR/manpower access is not assigned.","error");return redirect(url_for("project",pid=pid))
+    if not allowed_project(pid) or not can_module("HR"): flash("🚫 HR/manpower access is not assigned.","error"); return redirect(url_for("project",pid=pid))
     c=db()
-    if request.method=="POST":
-        c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,working_hours,hourly_rate,daily_rate,normal_ot_hours,normal_ot_rate,night_ot_hours,night_ot_rate,sunday_ot_hours,sunday_ot_rate,holiday_ot_hours,holiday_ot_rate,overtime_hours,overtime_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form["date"],request.form["name"],request.form["employment"],request.form["position"],parse_float(request.form.get("present")),parse_float(request.form.get("working_hours",8)),parse_float(request.form.get("hourly_rate")),parse_float(request.form.get("daily_rate")),parse_float(request.form.get("normal_ot_hours")),parse_float(request.form.get("normal_ot_rate")),parse_float(request.form.get("night_ot_hours")),parse_float(request.form.get("night_ot_rate")),parse_float(request.form.get("sunday_ot_hours")),parse_float(request.form.get("sunday_ot_rate")),parse_float(request.form.get("holiday_ot_hours")),parse_float(request.form.get("holiday_ot_rate")),0,0,request.form.get("notes",""),current_user()["id"]));c.commit();flash("👷 Manpower record saved.","success")
-    rows=c.execute("SELECT * FROM manpower WHERE project_id=? ORDER BY date DESC,id DESC LIMIT 100",(pid,)).fetchall();c.close();return render_template("manpower.html",pid=pid,rows=rows)
+    try:
+        if request.method=="POST":
+            vals=(pid,request.form["date"],request.form["name"],request.form["employment"],request.form["position"],request.form.get("crew_id") or None,parse_float(request.form.get("present")),parse_float(request.form.get("working_hours",8)),parse_float(request.form.get("hourly_rate")),parse_float(request.form.get("daily_rate")),parse_float(request.form.get("normal_ot_hours")),parse_float(request.form.get("normal_ot_rate")),parse_float(request.form.get("night_ot_hours")),parse_float(request.form.get("night_ot_rate")),parse_float(request.form.get("sunday_ot_hours")),parse_float(request.form.get("sunday_ot_rate")),parse_float(request.form.get("holiday_ot_hours")),parse_float(request.form.get("holiday_ot_rate")),0,0,request.form.get("notes",""),current_user()["id"])
+            c.execute("INSERT INTO manpower(project_id,date,name,employment,position,crew_id,present,working_hours,hourly_rate,daily_rate,normal_ot_hours,normal_ot_rate,night_ot_hours,night_ot_rate,sunday_ot_hours,sunday_ot_rate,holiday_ot_hours,holiday_ot_rate,overtime_hours,overtime_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",vals); c.commit(); flash("👷 Manpower record saved and linked to the selected crew.","success")
+    except Exception as e: c.rollback(); flash("Manpower save failed: "+str(e),"error")
+    rows=c.execute("SELECT mp.*,pc.group_name,pc.position crew_position,pc.name crew_name FROM manpower mp LEFT JOIN project_crews pc ON pc.id=mp.crew_id WHERE mp.project_id=? ORDER BY mp.date DESC,mp.id DESC LIMIT 100",(pid,)).fetchall(); crews=c.execute("SELECT * FROM project_crews WHERE project_id=? ORDER BY group_name,position,name",(pid,)).fetchall(); c.close(); return render_template("manpower.html",pid=pid,rows=rows,crews=crews)
 
 @app.route("/projects/<int:pid>/store",methods=["GET","POST"])
 @login_required
@@ -498,23 +597,29 @@ def store(pid):
 def crew(pid):
     if not allowed_project(pid) or not can_module("HR"): flash("🚫 Crew access is not assigned.","error"); return redirect(url_for("project",pid=pid))
     c=db()
-    if request.method=="POST":
-        action=request.form.get("action","add")
-        if action=="add_group":
-            name=request.form.get("new_group","").strip()
-            if name: c.execute("INSERT OR IGNORE INTO crew_groups(name) VALUES(?)",(name,)); c.commit(); flash("👥 Group added for future selection.","success")
-        elif action=="add_position":
-            name=request.form.get("new_position","").strip()
-            if name: c.execute("INSERT OR IGNORE INTO crew_positions(name) VALUES(?)",(name,)); c.commit(); flash("👷 Position added for future selection.","success")
-        else:
-            group=request.form.get("group_name","").strip(); position=request.form.get("position","").strip()
-            if group: c.execute("INSERT OR IGNORE INTO crew_groups(name) VALUES(?)",(group,))
-            if position: c.execute("INSERT OR IGNORE INTO crew_positions(name) VALUES(?)",(position,))
-            c.execute("INSERT INTO project_crews(project_id,date,group_name,position,name,employment,skill_level,working_hours,hourly_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form.get("date",dt.date.today().isoformat()),group,position,request.form["name"],request.form["employment"],request.form.get("skill_level","Skilled"),parse_float(request.form.get("working_hours")),parse_float(request.form.get("hourly_rate")),request.form.get("notes",""),current_user()["id"])); c.commit(); flash("👷 Crew member registered.","success")
-    groups=[r["name"] for r in c.execute("SELECT name FROM crew_groups WHERE active=1 ORDER BY name").fetchall()]
-    positions=[r["name"] for r in c.execute("SELECT name FROM crew_positions WHERE active=1 ORDER BY name").fetchall()]
-    rows=c.execute("SELECT * FROM project_crews WHERE project_id=? ORDER BY group_name,position,name",(pid,)).fetchall(); c.close()
-    return render_template("crew.html",pid=pid,rows=rows,crew_groups=groups,position_catalog=positions)
+    try:
+        if request.method=="POST":
+            action=request.form.get("action","add")
+            if action=="capacity":
+                name=request.form.get("capacity_group","").strip()
+                if not name: raise ValueError("Select or enter a crew group.")
+                c.execute("INSERT OR IGNORE INTO crew_groups(name) VALUES(?)",(name,))
+                c.execute("INSERT INTO crew_group_capacity(group_name,foreman_qty,dl_qty,surveyor_qty,data_collector_qty,time_keeper_qty,other_qty,total_qty) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(group_name) DO UPDATE SET foreman_qty=excluded.foreman_qty,dl_qty=excluded.dl_qty,surveyor_qty=excluded.surveyor_qty,data_collector_qty=excluded.data_collector_qty,time_keeper_qty=excluded.time_keeper_qty,other_qty=excluded.other_qty,total_qty=excluded.total_qty",(name,parse_float(request.form.get('foreman_qty')),parse_float(request.form.get('dl_qty')),parse_float(request.form.get('surveyor_qty')),parse_float(request.form.get('data_collector_qty')),parse_float(request.form.get('time_keeper_qty')),parse_float(request.form.get('other_qty')),parse_float(request.form.get('total_qty'))))
+                c.commit(); flash("👥 Crew capacity saved for future daily crew planning.","success")
+            elif action=="add_group":
+                name=request.form.get("new_group","").strip()
+                if name: c.execute("INSERT OR IGNORE INTO crew_groups(name) VALUES(?)",(name,)); c.execute("INSERT OR IGNORE INTO crew_group_capacity(group_name) VALUES(?)",(name,)); c.commit(); flash("👥 Group added for future selection.","success")
+            elif action=="add_position":
+                name=request.form.get("new_position","").strip()
+                if name: c.execute("INSERT OR IGNORE INTO crew_positions(name) VALUES(?)",(name,)); c.commit(); flash("👷 Position added for future selection.","success")
+            else:
+                group=request.form.get("group_name","").strip(); position=request.form.get("position","").strip()
+                if group: c.execute("INSERT OR IGNORE INTO crew_groups(name) VALUES(?)",(group,)); c.execute("INSERT OR IGNORE INTO crew_group_capacity(group_name) VALUES(?)",(group,))
+                if position: c.execute("INSERT OR IGNORE INTO crew_positions(name) VALUES(?)",(position,))
+                c.execute("INSERT INTO project_crews(project_id,date,group_name,position,name,employment,skill_level,working_hours,hourly_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form.get("date",dt.date.today().isoformat()),group,position,request.form["name"],request.form["employment"],request.form.get("skill_level","Skilled"),parse_float(request.form.get("working_hours")),parse_float(request.form.get("hourly_rate")),request.form.get("notes",""),current_user()["id"])); c.commit(); flash("👷 Crew member registered.","success")
+    except Exception as e: c.rollback(); flash("Crew save failed: "+str(e),"error")
+    groups=[r["name"] for r in c.execute("SELECT name FROM crew_groups WHERE active=1 ORDER BY name").fetchall()]; positions=[r["name"] for r in c.execute("SELECT name FROM crew_positions WHERE active=1 ORDER BY name").fetchall()]; rows=c.execute("SELECT * FROM project_crews WHERE project_id=? ORDER BY group_name,position,name",(pid,)).fetchall(); capacities=c.execute("SELECT * FROM crew_group_capacity WHERE active=1 ORDER BY group_name").fetchall(); c.close()
+    return render_template("crew.html",pid=pid,rows=rows,crew_groups=groups,position_catalog=positions,capacities=capacities)
 
 @app.route("/projects/<int:pid>/report-settings",methods=["GET","POST"])
 @admin_required
@@ -684,12 +789,26 @@ def update_user_photo(uid):
     except Exception as e: c.rollback(); flash("Photo update failed: "+str(e),"error")
     c.close(); return redirect(url_for("users"))
 
+
+CODE128_B_PATTERNS=["212222","222122","222221","121223","121322","131222","122213","122312","132212","221213","221312","231212","112232","122132","122231","113222","123122","123221","223211","221132","221231","213212","223112","312131","311222","321122","321221","312212","322112","322211","212123","212321","232121","111323","131123","131321","112313","132113","132311","211313","231113","231311","112133","112331","132131","113123","113321","133121","313121","211331","231131","213113","213311","213131","311123","311321","331121","312113","312311","332111","314111","221411","431111","111224","111422","121124","121421","141122","141221","112214","112412","122114","122411","142112","142211","241211","221114","413111","241112","134111","111242","121142","121241","114212","124112","124211","411212","421112","421211","212141","214121","412121","111143","111341","131141","114113","114311","411113","411311","113141","114131","311141","411131","211412","211214","211232","2331112"]
+def code128_svg(value):
+    value=str(value or "STAFF"); vals=[104]+[ord(ch)-32 if 32<=ord(ch)<=127 else 0 for ch in value]; checksum=(104+sum((i+1)*v for i,v in enumerate(vals[1:],1)))%103; vals.append(checksum); vals.append(106)
+    x=4; scale=1.35; h=34; parts=[]
+    for code in vals:
+        pat=CODE128_B_PATTERNS[code]
+        black=True
+        for n in map(int,pat):
+            if black: parts.append(f'<rect x="{x:.2f}" y="0" width="{n*scale:.2f}" height="{h}"/>')
+            x+=n*scale; black=not black
+    w=x+4
+    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w:.2f} 48" preserveAspectRatio="none"><rect width="100%" height="100%" fill="white"/>'+''.join(parts)+f'<text x="{w/2:.2f}" y="46" text-anchor="middle" font-family="Arial" font-size="8">{value}</text></svg>'
+
 @app.route("/admin/users/<int:uid>/id-card")
 @admin_required
 def user_id_card(uid):
     c=db(); u=c.execute("SELECT * FROM users WHERE id=?",(uid,)).fetchone(); c.close()
     if not u: return ("User not found",404)
-    return render_template("user_id_card.html",u=u)
+    return render_template("user_id_card.html",u=u,barcode_svg=code128_svg(u["staff_id"]))
 
 @app.route("/admin/users/<int:uid>/edit",methods=["POST"])
 @admin_required

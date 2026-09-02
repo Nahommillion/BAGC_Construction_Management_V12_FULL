@@ -26,3 +26,8 @@ Environment variables:
 
 ## Deployment note
 The application currently uses SQLite and runtime uploads. For production permanence on Render, use persistent storage or preferably PostgreSQL/object storage so database records and staff photos survive service replacement/redeployments.
+
+## V20 persistence requirement
+The application never deletes users, projects, BOQ, daily reports or saved reports during startup. SQLite is stored in `BAGC_DATA_DIR` when configured; if `/data` is writable it is preferred automatically. On Render, the normal ephemeral filesystem can still be reset during redeploy/restart. For permanent production data, configure a Render persistent disk mounted at `/data` (paid service) or migrate the SQLite database to PostgreSQL. Do not rely on the default ephemeral filesystem for company records.
+
+V20 also fixes the machinery/fuel save errors, adds linked daily work packages, crew evaluation/capacity, BOQ variation alerts, staff ID bilingual front/back and unique Code 128 barcodes, and automatic machine assignment completion based on signed total hours.
