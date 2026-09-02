@@ -20,7 +20,41 @@ app=Flask(__name__)
 app.secret_key=os.environ.get("SECRET_KEY","bagc-change-this-secret")
 
 DEPARTMENTS=["Administration","Design","Machinery","Finance","HR","Store","Project"]
-HEAD_OFFICE_STRUCTURE=[("General Manager",None,"Management"),("Operational Manager","General Manager","Management"),("Equipment & Store Department","Operational Manager","Department"),("Contract Administration Team","Operational Manager","Team"),("Engineering Team","Operational Manager","Team"),("HR Team","Operational Manager","Team"),("Finance Team","Operational Manager","Team"),("Project Management Team","Engineering Team","Team"),("Machinery Team","Equipment & Store Department","Team"),("Fuel Team","Equipment & Store Department","Team")]
+HEAD_OFFICE_STRUCTURE=[
+("General Manager",None,"Management"),
+("Operational Manager","General Manager","Management"),
+("Equipment & Store Department","Operational Manager","Department"),
+("Equipment Management Team","Equipment & Store Department","Team"),
+("Machinery Team","Equipment & Store Department","Team"),
+("Fuel Team","Equipment & Store Department","Team"),
+("Store Team","Equipment & Store Department","Team"),
+("Contract Administration Department","Operational Manager","Department"),
+("Contract Administration Team","Contract Administration Department","Team"),
+("Procurement Team","Contract Administration Department","Team"),
+("Engineering Department","Operational Manager","Department"),
+("Engineering Team","Engineering Department","Team"),
+("Project Management Team","Engineering Department","Team"),
+("Design Team","Engineering Department","Team"),
+("Quantity Survey & Cost Control Team","Engineering Department","Team"),
+("Planning & Monitoring Team","Engineering Department","Team"),
+("QA/QC Team","Engineering Department","Team"),
+("Survey Team","Engineering Department","Team"),
+("HSE / Safety Team","Engineering Department","Team"),
+("HR Department","Operational Manager","Department"),
+("HR Team","HR Department","Team"),
+("Recruitment & Staff Administration Team","HR Department","Team"),
+("Training & Performance Team","HR Department","Team"),
+("Finance Department","Operational Manager","Department"),
+("Finance Team","Finance Department","Team"),
+("Accounting Team","Finance Department","Team"),
+("Cash & Treasury Team","Finance Department","Team"),
+("Budget & Cost Control Team","Finance Department","Team"),
+("Administration & General Services Department","Operational Manager","Department"),
+("Administration Team","Administration & General Services Department","Team"),
+("Document Control Team","Administration & General Services Department","Team"),
+("IT & Systems Team","Administration & General Services Department","Team"),
+("Legal & Compliance Team","Operational Manager","Team")
+]
 UNIT_CATALOG=["m","m²","m³","mm","cm","kg","ton","litre","L","pcs","pc","no","set","lot","item","bag","roll","sheet","length","day","hour","hr","month","lump sum"]
 MACHINE_TYPES=["Dozer","Excavator","Wheel Loader","Backhoe Loader","Motor Grader","Roller","Dump Truck","Fuel Truck","Water Truck","Shower Truck","Crane","Forklift","Concrete Mixer","Concrete Pump","Batching Plant","Crusher","Asphalt Plant","Asphalt Paver","Bitumen Distributor","Road Sweeper","Generator","Welding Machine","Vibrator","Air Compressor","Pickup","Other"]
 MATERIAL_CATEGORIES=["Common Construction","Earthworks","Concrete","Rebar","Structural Steel / RHS","Formwork","Masonry","Roofing","Waterproofing","Finishing","Tiles","Natural Stone","Sanitary","Plumbing","Drainage","Electrical","Low Voltage / ICT","Aluminium","Glass","Road Works","Culverts","Landscaping","Fuel & Oil","Lubricants","Spare Parts","Welding / Cutting","PPE / Safety","Stationery & Cleaning","Tools","Other"]
@@ -897,7 +931,14 @@ def user_photo(filename):
 @app.route("/admin/head-office")
 @admin_required
 def head_office():
-    c=db(); units=c.execute("SELECT o.*,p.name parent_name,mu.full_name manager_name FROM org_units o LEFT JOIN org_units p ON p.id=o.parent_id LEFT JOIN users mu ON mu.id=o.manager_user_id WHERE o.active=1 ORDER BY o.sort_order,o.name").fetchall(); staff=c.execute("SELECT u.*,o.name org_name,m.full_name manager_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id LEFT JOIN users m ON m.id=u.reports_to_user_id WHERE u.active=1 ORDER BY o.sort_order,o.name,u.full_name").fetchall(); users_all=c.execute("SELECT id,full_name,position,department FROM users WHERE active=1 ORDER BY full_name").fetchall(); c.close(); return render_template("head_office.html",units=units,staff=staff,users_all=users_all)
+    c=db()
+    units=c.execute("SELECT o.*,p.name parent_name,mu.full_name manager_name FROM org_units o LEFT JOIN org_units p ON p.id=o.parent_id LEFT JOIN users mu ON mu.id=o.manager_user_id WHERE o.active=1 ORDER BY o.sort_order,o.name").fetchall()
+    staff=c.execute("SELECT u.*,o.name org_name,m.full_name manager_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id LEFT JOIN users m ON m.id=u.reports_to_user_id WHERE u.active=1 ORDER BY COALESCE(o.sort_order,9999),o.name,u.full_name").fetchall()
+    users_all=c.execute("SELECT id,full_name,position,department FROM users WHERE active=1 ORDER BY full_name").fetchall()
+    unit_staff={}
+    for u in units: unit_staff[u["id"]]=[x for x in staff if x["org_unit_id"]==u["id"]]
+    c.close()
+    return render_template("head_office.html",units=units,staff=staff,users_all=users_all,unit_staff=unit_staff)
 
 @app.route("/admin/head-office/unit",methods=["POST"])
 @admin_required
