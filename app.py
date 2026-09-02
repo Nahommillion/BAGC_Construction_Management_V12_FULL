@@ -21,7 +21,7 @@ app.secret_key=os.environ.get("SECRET_KEY","bagc-change-this-secret")
 
 DEPARTMENTS=["Administration","Design","Machinery","Finance","HR","Store","Project"]
 UNIT_CATALOG=["m","m²","m³","mm","cm","kg","ton","litre","L","pcs","pc","no","set","lot","item","bag","roll","sheet","length","day","hour","hr","month","lump sum"]
-MACHINE_TYPES=["Dozer","Excavator","Wheel Loader","Backhoe Loader","Motor Grader","Roller","Dump Truck","Water Truck","Crane","Forklift","Concrete Mixer","Concrete Pump","Batching Plant","Crusher","Asphalt Plant","Asphalt Paver","Bitumen Distributor","Road Sweeper","Generator","Welding Machine","Vibrator","Air Compressor","Pickup","Other"]
+MACHINE_TYPES=["Dozer","Excavator","Wheel Loader","Backhoe Loader","Motor Grader","Roller","Dump Truck","Fuel Truck","Water Truck","Shower Truck","Crane","Forklift","Concrete Mixer","Concrete Pump","Batching Plant","Crusher","Asphalt Plant","Asphalt Paver","Bitumen Distributor","Road Sweeper","Generator","Welding Machine","Vibrator","Air Compressor","Pickup","Other"]
 MATERIAL_CATEGORIES=["Common Construction","Earthworks","Concrete","Rebar","Structural Steel / RHS","Formwork","Masonry","Roofing","Waterproofing","Finishing","Tiles","Natural Stone","Sanitary","Plumbing","Drainage","Electrical","Low Voltage / ICT","Aluminium","Glass","Road Works","Culverts","Landscaping","Fuel & Oil","Lubricants","Spare Parts","Welding / Cutting","PPE / Safety","Stationery & Cleaning","Tools","Other"]
 MATERIAL_CATALOG=[
 "Cement OPC","Cement PPC","Cement Rapid Hardening","Sand Fine","Sand Coarse","Quarry Dust","Selected Fill","Subbase","Base Course",
@@ -72,13 +72,13 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     c.executescript('''
-    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,position TEXT,location TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,photo_filename TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,position TEXT,location TEXT,phone TEXT,email TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,photo_filename TEXT,last_login TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,name TEXT UNIQUE,code TEXT,location TEXT,client TEXT,consultant TEXT,status TEXT DEFAULT 'Active',start_date TEXT,end_date TEXT);
     CREATE TABLE IF NOT EXISTS user_projects(user_id INTEGER,project_id INTEGER,UNIQUE(user_id,project_id));
     CREATE TABLE IF NOT EXISTS boq(id INTEGER PRIMARY KEY,project_id INTEGER,item_no TEXT,description TEXT,unit TEXT,rate REAL DEFAULT 0,contract_qty REAL DEFAULT 0,source_sheet TEXT,series TEXT DEFAULT '',title TEXT DEFAULT '',UNIQUE(project_id,item_no));
     CREATE TABLE IF NOT EXISTS boq_settings(id INTEGER PRIMARY KEY,project_id INTEGER UNIQUE,title TEXT DEFAULT '',revision TEXT DEFAULT '',effective_date TEXT);
     CREATE TABLE IF NOT EXISTS daily_work(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,boq_id INTEGER,quantity REAL,unit TEXT,station_from TEXT,station_to TEXT,notes TEXT,user_id INTEGER);
-    CREATE TABLE IF NOT EXISTS machines(id INTEGER PRIMARY KEY,project_id INTEGER,machine_type TEXT,code TEXT,ownership TEXT,hourly_rate REAL DEFAULT 0,expected_fuel REAL DEFAULT 0,active INTEGER DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS machines(id INTEGER PRIMARY KEY,project_id INTEGER,machine_type TEXT,code TEXT,ownership TEXT,hourly_rate REAL DEFAULT 0,rate_unit TEXT DEFAULT 'hr',expected_fuel REAL DEFAULT 0,active INTEGER DEFAULT 1);
     CREATE TABLE IF NOT EXISTS machine_logs(id INTEGER PRIMARY KEY,project_id INTEGER,machine_id INTEGER,date TEXT,work_hours REAL DEFAULT 0,idle_hours REAL DEFAULT 0,idle_reason TEXT,idle_payable INTEGER DEFAULT 0,down_hours REAL DEFAULT 0,down_reason TEXT,opening_gauge REAL DEFAULT 0,fuel_received REAL DEFAULT 0,closing_gauge REAL DEFAULT 0,notes TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS materials(id INTEGER PRIMARY KEY,project_id INTEGER,category TEXT,name TEXT,unit TEXT,min_stock REAL DEFAULT 0,active INTEGER DEFAULT 1,UNIQUE(project_id,name));
     CREATE TABLE IF NOT EXISTS store_logs(id INTEGER PRIMARY KEY,project_id INTEGER,material_id INTEGER,date TEXT,received REAL DEFAULT 0,issued REAL DEFAULT 0,unit_cost REAL DEFAULT 0,physical_balance REAL,reference TEXT,notes TEXT,user_id INTEGER);
@@ -115,6 +115,8 @@ def init_db():
     existing_sr=[r['name'] for r in c.execute("PRAGMA table_info(saved_reports)").fetchall()]
     if 'source_report_ids' not in existing_sr: c.execute("ALTER TABLE saved_reports ADD COLUMN source_report_ids TEXT DEFAULT '[]'")
     existing_u=[r['name'] for r in c.execute("PRAGMA table_info(users)").fetchall()]
+    for col,typ in [('phone','TEXT'),('email','TEXT'),('last_login','TEXT')]:
+        if col not in existing_u: c.execute(f"ALTER TABLE users ADD COLUMN {col} {typ}")
     if 'position' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN position TEXT")
     if 'staff_id' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN staff_id TEXT")
     if 'photo_filename' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN photo_filename TEXT")
@@ -136,6 +138,13 @@ def init_db():
     existing_f=[r['name'] for r in c.execute("PRAGMA table_info(fuel_logs)").fetchall()]
     if 'source' not in existing_f: c.execute("ALTER TABLE fuel_logs ADD COLUMN source TEXT DEFAULT 'Fuel Register'")
     existing_m=[r['name'] for r in c.execute("PRAGMA table_info(machines)").fetchall()]
+    for col,typ in [('assignment_start_date','TEXT'),('assignment_start_hour','REAL DEFAULT 0'),('assignment_end_date','TEXT'),('assignment_end_hour','REAL'),('total_signed_hours','REAL DEFAULT 0'),('hours_used','REAL DEFAULT 0'),('lifecycle_status',"TEXT DEFAULT 'ACTIVE'"),('assignment_signed_by','INTEGER'),('assignment_ended_by','INTEGER'),('assignment_ended_at','TEXT')]:
+        if col not in existing_m: c.execute(f"ALTER TABLE machines ADD COLUMN {col} {typ}")
+    existing_ma=[r['name'] for r in c.execute("PRAGMA table_info(machine_assignments)").fetchall()]
+    for col,typ in [('total_signed_hours','REAL DEFAULT 0'),('hours_used','REAL DEFAULT 0')]:
+        if col not in existing_ma: c.execute(f"ALTER TABLE machine_assignments ADD COLUMN {col} {typ}")
+    existing_m=[r['name'] for r in c.execute("PRAGMA table_info(machines)").fetchall()]
+    if 'rate_unit' not in existing_m: c.execute("ALTER TABLE machines ADD COLUMN rate_unit TEXT DEFAULT 'hr'")
     for col,typ in [('assignment_start_date','TEXT'),('assignment_start_hour','REAL DEFAULT 0'),('assignment_end_date','TEXT'),('assignment_end_hour','REAL'),('total_signed_hours','REAL DEFAULT 0'),('hours_used','REAL DEFAULT 0'),('lifecycle_status',"TEXT DEFAULT 'ACTIVE'"),('assignment_signed_by','INTEGER'),('assignment_ended_by','INTEGER'),('assignment_ended_at','TEXT')]:
         if col not in existing_m: c.execute(f"ALTER TABLE machines ADD COLUMN {col} {typ}")
     for g in CREW_GROUPS: c.execute("INSERT OR IGNORE INTO crew_groups(name) VALUES(?)",(g,))
@@ -234,7 +243,7 @@ def build_report_snapshot(pid,start,end,scope='ALL'):
         rows=c.execute("SELECT b.*,COALESCE(SUM(CASE WHEN dw.date<? THEN dw.quantity ELSE 0 END),0) previous_qty,COALESCE(SUM(CASE WHEN dw.date BETWEEN ? AND ? THEN dw.quantity ELSE 0 END),0) period_qty,COALESCE(SUM(dw.quantity),0) todate_qty FROM boq b LEFT JOIN daily_work dw ON dw.boq_id=b.id WHERE b.project_id=? GROUP BY b.id ORDER BY b.item_no",(start.isoformat(),start.isoformat(),end.isoformat(),pid)).fetchall()
         out['boq']=[dict(r,previous_amount=r['previous_qty']*r['rate'],period_amount=r['period_qty']*r['rate'],todate_amount=r['todate_qty']*r['rate']) for r in rows]
     if scope in ('ALL','MACHINERY'):
-        out['machinery']=[dict(r) for r in c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,m.hourly_rate,m.expected_fuel,((ml.work_hours+CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel,(ml.work_hours*m.expected_fuel) expected_fuel FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? AND ml.date BETWEEN ? AND ? ORDER BY ml.date,ml.id",(pid,start.isoformat(),end.isoformat())).fetchall()]
+        out['machinery']=[dict(r) for r in c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,m.hourly_rate,m.rate_unit,m.expected_fuel,(CASE WHEN m.rate_unit='day' THEN CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN m.hourly_rate ELSE 0 END WHEN m.rate_unit='month' THEN CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN m.hourly_rate/30.0 ELSE 0 END ELSE (ml.work_hours+CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate END) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel,(ml.work_hours*m.expected_fuel) expected_fuel FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? AND ml.date BETWEEN ? AND ? ORDER BY ml.date,ml.id",(pid,start.isoformat(),end.isoformat())).fetchall()]
     if scope in ('ALL','MANPOWER'):
         out['manpower']=[dict(r) for r in c.execute("SELECT * FROM manpower WHERE project_id=? AND date BETWEEN ? AND ? ORDER BY date,id",(pid,start.isoformat(),end.isoformat())).fetchall()]
     if scope in ('ALL','STORE'):
@@ -249,7 +258,7 @@ def build_report_snapshot(pid,start,end,scope='ALL'):
     # summary totals, always useful for every saved report
     out['summary']={
         'income': c.execute("SELECT COALESCE(SUM(dw.quantity*b.rate),0) FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=? AND dw.date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()[0],
-        'machinery_expense': c.execute("SELECT COALESCE(SUM((ml.work_hours+CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate),0) FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? AND ml.date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()[0],
+        'machinery_expense': c.execute("SELECT COALESCE(SUM(CASE WHEN m.rate_unit='day' THEN CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN m.hourly_rate ELSE 0 END WHEN m.rate_unit='month' THEN CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN m.hourly_rate/30.0 ELSE 0 END ELSE (ml.work_hours+CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate END),0) FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? AND ml.date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()[0],
         'manpower_expense': c.execute("SELECT COALESCE(SUM(CASE WHEN hourly_rate>0 THEN present*working_hours*hourly_rate ELSE present*daily_rate END+normal_ot_hours*normal_ot_rate+night_ot_hours*night_ot_rate+sunday_ot_hours*sunday_ot_rate+holiday_ot_hours*holiday_ot_rate),0) FROM manpower WHERE project_id=? AND date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()[0],
         'store_expense': c.execute("SELECT COALESCE(SUM(issued*unit_cost),0) FROM store_logs WHERE project_id=? AND date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()[0],
         'other_expense': c.execute("SELECT COALESCE(SUM(amount),0) FROM finance_logs WHERE project_id=? AND kind='Expense' AND date BETWEEN ? AND ?",(pid,start.isoformat(),end.isoformat())).fetchone()[0],
@@ -279,14 +288,14 @@ def dashboard_data(pid=None):
     out=[]
     for p in projects:
         inc=c.execute("SELECT COALESCE(SUM(dw.quantity*b.rate),0) x FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=?",(p["id"],)).fetchone()["x"]
-        me=c.execute("SELECT COALESCE(SUM(ml.work_hours*m.hourly_rate),0) x FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=?",(p["id"],)).fetchone()["x"]
+        me=c.execute("SELECT COALESCE(SUM(CASE WHEN m.rate_unit='day' THEN CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN m.hourly_rate ELSE 0 END WHEN m.rate_unit='month' THEN CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN m.hourly_rate/30.0 ELSE 0 END ELSE (ml.work_hours+CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate END),0) x FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=?",(p["id"],)).fetchone()["x"]
         pe=c.execute("SELECT COALESCE(SUM((CASE WHEN mp.hourly_rate>0 THEN mp.present*mp.working_hours*mp.hourly_rate ELSE mp.present*mp.daily_rate END + mp.normal_ot_hours*mp.normal_ot_rate + mp.night_ot_hours*mp.night_ot_rate + mp.sunday_ot_hours*mp.sunday_ot_rate + mp.holiday_ot_hours*mp.holiday_ot_rate)),0) x FROM manpower mp WHERE mp.project_id=?",(p["id"],)).fetchone()["x"]
         se=c.execute("SELECT COALESCE(SUM(sl.issued*sl.unit_cost),0) x FROM store_logs sl WHERE sl.project_id=?",(p["id"],)).fetchone()["x"]
         other=c.execute("SELECT COALESCE(SUM(amount),0) x FROM finance_logs WHERE project_id=? AND kind='Expense'",(p["id"],)).fetchone()["x"]
         workers=c.execute("SELECT COUNT(*) x FROM manpower WHERE project_id=? AND present>0",(p["id"],)).fetchone()["x"]
         machines=c.execute("SELECT COUNT(*) x FROM machines WHERE project_id=? AND active=1",(p["id"],)).fetchone()["x"]
         total_exp=money(me+pe+se+other)
-        daily_m=c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,((ml.work_hours + CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? ORDER BY ml.date DESC,ml.id DESC LIMIT 8",(p["id"],)).fetchall()
+        daily_m=c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,((CASE WHEN m.rate_unit='day' THEN CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN m.hourly_rate ELSE 0 END WHEN m.rate_unit='month' THEN CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN m.hourly_rate/30.0 ELSE 0 END ELSE (ml.work_hours+CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate END)) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? ORDER BY ml.date DESC,ml.id DESC LIMIT 8",(p["id"],)).fetchall()
         daily_mat=c.execute("SELECT sl.*,m.name,m.category,m.unit FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? ORDER BY sl.date DESC,sl.id DESC LIMIT 8",(p["id"],)).fetchall()
         fuel_recent=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,(f.opening_gauge+f.fuel_received-f.closing_gauge) consumption,(f.fuel_received*f.fuel_price) cost FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? ORDER BY f.date DESC,f.id DESC LIMIT 8",(p["id"],)).fetchall()
         contract_value=p["contract_value"] or c.execute("SELECT COALESCE(SUM(contract_qty*rate),0) FROM boq WHERE project_id=?",(p["id"],)).fetchone()[0]
@@ -330,6 +339,7 @@ def login():
             session.clear()
             session["user_id"] = int(u["id"])
             session.permanent = True
+            lc=db(); lc.execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(int(u["id"]),)); lc.commit(); lc.close()
             # Use a normal redirect to the canonical dashboard endpoint.
             # The dashboard route itself rebuilds the project scope from the session.
             return redirect(url_for("dashboard"))
@@ -625,14 +635,14 @@ def assign_machine(pid):
         mid=int(request.form.get("machine_id")); m=c.execute("SELECT * FROM machines WHERE id=? AND project_id=? AND active=1",(mid,pid)).fetchone()
         if not m: raise ValueError("Machine not found in this project fleet.")
         active=c.execute("SELECT id FROM machine_assignments WHERE machine_id=? AND project_id=? AND status='ACTIVE'",(mid,pid)).fetchone()
-        if active: raise ValueError("This machine already has an active signed assignment.")
-        start_date=request.form.get("start_date") or dt.date.today().isoformat(); start_hour=parse_float(request.form.get("start_hour")); total=parse_float(request.form.get("total_hours"))
-        # Signed total hours are optional. A machine can still be registered/active for daily use
-        # without a fixed hour limit. If a total is supplied, automatic closing is enabled.
-        if total < 0: raise ValueError("Total Signed Hours cannot be negative.")
-        c.execute("INSERT INTO machine_assignments(machine_id,project_id,start_date,start_hour,total_signed_hours,hours_used,status,assigned_by,notes) VALUES(?,?,?,?,?,0,'ACTIVE',?,?)",(mid,pid,start_date,start_hour,total,current_user()["id"],request.form.get("notes","")))
-        c.execute("UPDATE machines SET assignment_start_date=?,assignment_start_hour=?,assignment_end_date=NULL,assignment_end_hour=NULL,total_signed_hours=?,hours_used=0,lifecycle_status='ACTIVE',assignment_signed_by=?,assignment_ended_by=NULL,assignment_ended_at=NULL WHERE id=? AND project_id=?",(start_date,start_hour,total,current_user()["id"],mid,pid))
-        c.commit(); flash("✍️ Machine registered successfully. Signed total hours are optional; automatic ending will apply when a signed total is provided.","success")
+        if active: raise ValueError("This machine already has an active signed registration.")
+        raw=request.form.get("total_hours","").strip()
+        if not raw: raise ValueError("Enter the Total Signed Hours before registering the machine.")
+        total=parse_float(raw)
+        if total<=0: raise ValueError("Total Signed Hours must be greater than zero.")
+        c.execute("INSERT INTO machine_assignments(machine_id,project_id,total_signed_hours,hours_used,status,assigned_by,notes) VALUES(?,?,?,0,'ACTIVE',?,?)",(mid,pid,total,current_user()["id"],request.form.get("notes","")))
+        c.execute("UPDATE machines SET total_signed_hours=?,hours_used=0,lifecycle_status='ACTIVE',assignment_signed_by=?,assignment_ended_by=NULL,assignment_ended_at=NULL,assignment_end_date=NULL,assignment_end_hour=NULL WHERE id=? AND project_id=?",(total,current_user()["id"],mid,pid))
+        c.commit(); flash(f"✍️ Machine registered for {total:g} signed hours. The system will alert and stop the assignment when the limit is reached.","success")
     except Exception as e:
         c.rollback(); flash("Could not sign machine assignment: "+str(e),"error")
     finally: c.close()
@@ -664,7 +674,7 @@ def machinery(pid):
     if request.method=="POST":
         action=request.form.get("action")
         if action=="add":
-            c.execute("INSERT INTO machines(project_id,machine_type,code,plate_no,engine_no,ownership,hourly_rate,expected_fuel,fuel_price,lifecycle_status) VALUES(?,?,?,?,?,?,?,?,?,?)",(pid,request.form["machine_type"],request.form["code"],request.form.get("plate_no",request.form["code"]),request.form.get("engine_no",""),request.form["ownership"],parse_float(request.form["hourly_rate"]),parse_float(request.form["expected_fuel"]),parse_float(request.form.get("fuel_price")),"UNASSIGNED"))
+            c.execute("INSERT INTO machines(project_id,machine_type,code,plate_no,engine_no,ownership,hourly_rate,rate_unit,expected_fuel,fuel_price,lifecycle_status) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,request.form["machine_type"],request.form["code"],request.form.get("plate_no",request.form["code"]),request.form.get("engine_no",""),request.form["ownership"],parse_float(request.form["hourly_rate"]),request.form.get("rate_unit","hr"),parse_float(request.form["expected_fuel"]),parse_float(request.form.get("fuel_price")),"UNASSIGNED"))
             flash("🚜 Machine added to this project's fleet.","success")
         elif action=="remove":c.execute("UPDATE machines SET active=0 WHERE id=? AND project_id=?",(request.form["machine_id"],pid));flash("Machine removed from active fleet.","success")
         elif action=="log":
@@ -678,11 +688,18 @@ def machinery(pid):
             used=parse_float(request.form.get("work_hours"))+parse_float(request.form.get("idle_hours"))+parse_float(request.form.get("down_hours"))
             ma=c.execute("SELECT id,total_signed_hours,hours_used FROM machine_assignments WHERE machine_id=? AND project_id=? AND status='ACTIVE' ORDER BY id DESC LIMIT 1",(request.form['machine_id'],pid)).fetchone()
             if ma:
-                new_used=(ma['hours_used'] or 0)+used; reached=bool((ma['total_signed_hours'] or 0)>0 and new_used >= (ma['total_signed_hours'] or 0)); end_meter=(ma['total_signed_hours'] or 0) + (c.execute("SELECT start_hour FROM machine_assignments WHERE id=?",(ma['id'],)).fetchone()[0] or 0) if reached else None; c.execute("UPDATE machine_assignments SET hours_used=?,status=CASE WHEN ? THEN 'ENDED' ELSE status END,end_date=CASE WHEN ? THEN ? ELSE end_date END,end_hour=CASE WHEN ? THEN ? ELSE end_hour END WHERE id=?",(new_used,reached,reached,request.form['date'],reached,end_meter,ma['id'])); c.execute("UPDATE machines SET hours_used=?,lifecycle_status=CASE WHEN ? THEN 'ENDED' ELSE lifecycle_status END,assignment_end_date=CASE WHEN ? THEN ? ELSE assignment_end_date END,assignment_end_hour=CASE WHEN ? THEN ? ELSE assignment_end_hour END WHERE id=?",(new_used,reached,reached,request.form['date'],reached,end_meter,request.form['machine_id']))
-            flash("⏱️ Machine hours / idle / down / gauge saved successfully.","success")
+                limit=ma['total_signed_hours'] or 0; new_used=(ma['hours_used'] or 0)+used; reached=bool(limit>0 and new_used >= limit)
+                c.execute("UPDATE machine_assignments SET hours_used=?,status=CASE WHEN ? THEN 'ENDED' ELSE status END,end_date=CASE WHEN ? THEN ? ELSE end_date END,end_hour=CASE WHEN ? THEN NULL ELSE end_hour END WHERE id=?",(new_used,reached,reached,request.form['date'],reached,ma['id']))
+                c.execute("UPDATE machines SET hours_used=?,lifecycle_status=CASE WHEN ? THEN 'ENDED' ELSE lifecycle_status END,assignment_end_date=CASE WHEN ? THEN ? ELSE assignment_end_date END,assignment_end_hour=NULL WHERE id=?",(new_used,reached,reached,request.form['date'],request.form['machine_id']))
+                if reached:
+                    flash(f"🚨 SIGNED HOURS REACHED: Machine has used {new_used:g} of {limit:g} signed hours. A new signature is required before further use.","error")
+                else:
+                    flash(f"⏱️ Machine log saved. Signed hours used: {new_used:g} / {limit:g} h.","success")
+            else:
+                flash("⏱️ Machine hours / idle / down / gauge saved successfully.","success")
         try: c.commit()
         except Exception as e: c.rollback(); flash("Machinery save failed: "+str(e),"error")
-    machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall();assignments=c.execute("SELECT ma.*,m.machine_type,m.code,m.plate_no FROM machine_assignments ma JOIN machines m ON m.id=ma.machine_id WHERE ma.project_id=? ORDER BY ma.id DESC LIMIT 100",(pid,)).fetchall();logs=c.execute("SELECT ml.*,m.machine_type,m.code,m.ownership,m.hourly_rate,m.expected_fuel,((ml.work_hours + CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel,(ml.work_hours*m.expected_fuel) expected_fuel_qty,CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN ml.work_hours*100.0/(ml.work_hours+ml.idle_hours+ml.down_hours) ELSE 0 END utilization,CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN (ml.work_hours+ml.idle_hours)*100.0/(ml.work_hours+ml.idle_hours+ml.down_hours) ELSE 0 END availability,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge)-(ml.work_hours*m.expected_fuel) fuel_discrepancy FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? ORDER BY ml.date DESC,ml.id DESC LIMIT 50",(pid,)).fetchall();c.close()
+    machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall();assignments=c.execute("SELECT ma.*,m.machine_type,m.code,m.plate_no FROM machine_assignments ma JOIN machines m ON m.id=ma.machine_id WHERE ma.project_id=? ORDER BY ma.id DESC LIMIT 100",(pid,)).fetchall();logs=c.execute("SELECT ml.*,m.machine_type,m.code,m.ownership,m.hourly_rate,m.rate_unit,m.expected_fuel,((CASE WHEN m.rate_unit='day' THEN CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN m.hourly_rate ELSE 0 END WHEN m.rate_unit='month' THEN CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN m.hourly_rate/30.0 ELSE 0 END ELSE (ml.work_hours+CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate END)) expense,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge) actual_fuel,(ml.work_hours*m.expected_fuel) expected_fuel_qty,CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN ml.work_hours*100.0/(ml.work_hours+ml.idle_hours+ml.down_hours) ELSE 0 END utilization,CASE WHEN (ml.work_hours+ml.idle_hours+ml.down_hours)>0 THEN (ml.work_hours+ml.idle_hours)*100.0/(ml.work_hours+ml.idle_hours+ml.down_hours) ELSE 0 END availability,(ml.opening_gauge+ml.fuel_received-ml.closing_gauge)-(ml.work_hours*m.expected_fuel) fuel_discrepancy FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? ORDER BY ml.date DESC,ml.id DESC LIMIT 50",(pid,)).fetchall();c.close()
     return render_template("machinery.html",pid=pid,machines=machines,assignments=assignments,logs=logs)
 
 @app.route("/projects/<int:pid>/manpower",methods=["GET","POST"])
@@ -881,10 +898,10 @@ def add_user():
         ext=secure_filename(photo.filename).rsplit('.',1)[-1].lower() if '.' in photo.filename else ''
         if ext not in ALLOWED_PHOTO_EXT: raise ValueError("Photo must be JPG, JPEG, PNG or WEBP.")
         role="SUPER_ADMIN" if request.form.get("role")=="SUPER_ADMIN" else "STAFF"
-        vals=(request.form["full_name"].strip(),request.form["username"].strip(),generate_password_hash(request.form["password"]),request.form["department"],request.form.get("position","Other"),request.form.get("location","").strip(),role)
+        vals=(request.form["full_name"].strip(),request.form["username"].strip(),generate_password_hash(request.form["password"]),request.form["department"],request.form.get("position","Other"),request.form.get("location","").strip(),request.form.get("phone","").strip(),request.form.get("email","").strip(),role)
         for attempt in range(5):
             try:
-                c.execute("INSERT INTO users(full_name,username,password_hash,department,position,location,role,photo_filename) VALUES(?,?,?,?,?,?,?,?)",vals+ (None,))
+                c.execute("INSERT INTO users(full_name,username,password_hash,department,position,location,phone,email,role,photo_filename) VALUES(?,?,?,?,?,?,?,?,?,?)",vals+ (None,))
                 uid=c.execute("SELECT id FROM users WHERE username=?",(request.form["username"].strip(),)).fetchone()["id"]
                 staff_id=make_staff_id(request.form["department"],uid)
                 filename=f"{staff_id}_{uid}.{ext}"
@@ -962,7 +979,7 @@ def edit_user(uid):
         if not username: raise ValueError("Username is required.")
         clash=c.execute("SELECT id FROM users WHERE username=? AND id<>?",(username,uid)).fetchone()
         if clash: raise ValueError("Username already exists.")
-        c.execute("UPDATE users SET full_name=?,username=?,department=?,position=?,location=?,role=? WHERE id=?",(request.form.get("full_name","").strip(),username,request.form.get("department","Project"),request.form.get("position","Other"),request.form.get("location","").strip(),role,uid))
+        c.execute("UPDATE users SET full_name=?,username=?,department=?,position=?,location=?,phone=?,email=?,role=? WHERE id=?",(request.form.get("full_name","").strip(),username,request.form.get("department","Project"),request.form.get("position","Other"),request.form.get("location","").strip(),request.form.get("phone","").strip(),request.form.get("email","").strip(),role,uid))
         c.commit(); flash("✏️ User profile, department, position and role updated.","success")
     except Exception as e: c.rollback(); flash("User update failed: "+str(e),"error")
     c.close(); return redirect(url_for("users"))
