@@ -6,8 +6,12 @@ from werkzeug.utils import secure_filename
 from openpyxl import load_workbook
 
 BASE=os.path.dirname(os.path.abspath(__file__))
-DB=os.path.join(BASE,"bagc.db")
-UPLOADS=os.path.join(BASE,"uploads")
+# Keep application data outside the code directory when BAGC_DATA_DIR is configured.
+# This prevents redeploying/replacing the source from replacing the database.
+DATA_DIR=os.environ.get("BAGC_DATA_DIR", BASE).strip() or BASE
+os.makedirs(DATA_DIR, exist_ok=True)
+DB=os.path.join(DATA_DIR,"bagc.db")
+UPLOADS=os.path.join(DATA_DIR,"uploads")
 USER_PHOTOS=os.path.join(UPLOADS,"user_photos")
 os.makedirs(UPLOADS,exist_ok=True)
 os.makedirs(USER_PHOTOS,exist_ok=True)
@@ -62,7 +66,8 @@ def init_db():
     CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,position TEXT,location TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,photo_filename TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,name TEXT UNIQUE,code TEXT,location TEXT,client TEXT,consultant TEXT,status TEXT DEFAULT 'Active',start_date TEXT,end_date TEXT);
     CREATE TABLE IF NOT EXISTS user_projects(user_id INTEGER,project_id INTEGER,UNIQUE(user_id,project_id));
-    CREATE TABLE IF NOT EXISTS boq(id INTEGER PRIMARY KEY,project_id INTEGER,item_no TEXT,description TEXT,unit TEXT,rate REAL DEFAULT 0,contract_qty REAL DEFAULT 0,source_sheet TEXT,UNIQUE(project_id,item_no));
+    CREATE TABLE IF NOT EXISTS boq(id INTEGER PRIMARY KEY,project_id INTEGER,item_no TEXT,description TEXT,unit TEXT,rate REAL DEFAULT 0,contract_qty REAL DEFAULT 0,source_sheet TEXT,series TEXT DEFAULT '',title TEXT DEFAULT '',UNIQUE(project_id,item_no));
+    CREATE TABLE IF NOT EXISTS boq_settings(id INTEGER PRIMARY KEY,project_id INTEGER UNIQUE,title TEXT DEFAULT '',revision TEXT DEFAULT '',effective_date TEXT);
     CREATE TABLE IF NOT EXISTS daily_work(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,boq_id INTEGER,quantity REAL,station_from TEXT,station_to TEXT,notes TEXT,user_id INTEGER);
     CREATE TABLE IF NOT EXISTS machines(id INTEGER PRIMARY KEY,project_id INTEGER,machine_type TEXT,code TEXT,ownership TEXT,hourly_rate REAL DEFAULT 0,expected_fuel REAL DEFAULT 0,active INTEGER DEFAULT 1);
     CREATE TABLE IF NOT EXISTS machine_logs(id INTEGER PRIMARY KEY,project_id INTEGER,machine_id INTEGER,date TEXT,work_hours REAL DEFAULT 0,idle_hours REAL DEFAULT 0,idle_reason TEXT,idle_payable INTEGER DEFAULT 0,down_hours REAL DEFAULT 0,down_reason TEXT,opening_gauge REAL DEFAULT 0,fuel_received REAL DEFAULT 0,closing_gauge REAL DEFAULT 0,notes TEXT,user_id INTEGER);
@@ -87,6 +92,9 @@ def init_db():
     CREATE TABLE IF NOT EXISTS machine_assignments(id INTEGER PRIMARY KEY,machine_id INTEGER,project_id INTEGER,start_date TEXT,start_hour REAL DEFAULT 0,end_date TEXT,end_hour REAL,status TEXT DEFAULT 'ACTIVE',assigned_by INTEGER,ended_by INTEGER,ended_at TEXT,notes TEXT);
     ''')
     # Safe migrations for databases created by earlier BAGC versions.
+    existing_bq=[r['name'] for r in c.execute("PRAGMA table_info(boq)").fetchall()]
+    if 'series' not in existing_bq: c.execute("ALTER TABLE boq ADD COLUMN series TEXT DEFAULT ''")
+    if 'title' not in existing_bq: c.execute("ALTER TABLE boq ADD COLUMN title TEXT DEFAULT ''")
     existing_sr=[r['name'] for r in c.execute("PRAGMA table_info(saved_reports)").fetchall()]
     if 'source_report_ids' not in existing_sr: c.execute("ALTER TABLE saved_reports ADD COLUMN source_report_ids TEXT DEFAULT '[]'")
     existing_u=[r['name'] for r in c.execute("PRAGMA table_info(users)").fetchall()]
@@ -346,8 +354,9 @@ def project(pid):
 @app.route("/projects/<int:pid>/daily",methods=["GET","POST"])
 @login_required
 def daily(pid):
-    if not allowed_project(pid) or not can_module("Project"):
-        flash("🚫 Project daily reporting access is not assigned to your account.","error");return redirect(url_for("project",pid=pid))
+    u=current_user()
+    if not allowed_project(pid) or (u["role"]!="SUPER_ADMIN" and u["position"]!="Office Engineer"):
+        flash("🚫 Only the assigned Office Engineer can prepare the Daily Report. Super Admin may approve/enter when required.","error");return redirect(url_for("project",pid=pid))
     c=db(); default_date=request.args.get("date",dt.date.today().isoformat())
     if request.method=="POST":
         d=request.form.get("date") or default_date
@@ -382,8 +391,12 @@ def daily(pid):
         try: save_report(pid,'DAILY',dt.date.fromisoformat(d),dt.date.fromisoformat(d),'ALL',current_user()['id'])
         except Exception: pass
     boq=c.execute("SELECT * FROM boq WHERE project_id=? ORDER BY item_no",(pid,)).fetchall();machines=c.execute("SELECT * FROM machines WHERE project_id=? AND active=1 ORDER BY machine_type,code",(pid,)).fetchall();materials=c.execute("SELECT * FROM materials WHERE project_id=? AND active=1 ORDER BY category,name",(pid,)).fetchall()
-    recent=c.execute("SELECT dw.*,b.item_no,b.description,b.unit,b.rate,dw.quantity*b.rate amount FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=? ORDER BY dw.date DESC,dw.id DESC LIMIT 20",(pid,)).fetchall();c.close()
-    return render_template("daily.html",pid=pid,date=default_date,boq=boq,machines=machines,materials=materials,recent=recent)
+    recent=c.execute("SELECT dw.*,b.item_no,b.description,b.unit,b.rate,dw.quantity*b.rate amount FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=? ORDER BY dw.date DESC,dw.id DESC LIMIT 20",(pid,)).fetchall()
+    linked_machines=c.execute("SELECT ml.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE ml.project_id=? AND ml.date=? ORDER BY ml.id",(pid,default_date)).fetchall()
+    linked_fuel=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,m.engine_no FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? AND f.date=? ORDER BY f.id",(pid,default_date)).fetchall()
+    linked_store=c.execute("SELECT sl.*,m.name,m.unit FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? AND sl.date=? ORDER BY sl.id",(pid,default_date)).fetchall()
+    c.close()
+    return render_template("daily.html",pid=pid,date=default_date,boq=boq,machines=machines,materials=materials,recent=recent,linked_machines=linked_machines,linked_fuel=linked_fuel,linked_store=linked_store)
 
 
 @app.route("/projects/<int:pid>/machinery/assign",methods=['POST'])
@@ -678,6 +691,22 @@ def user_id_card(uid):
     if not u: return ("User not found",404)
     return render_template("user_id_card.html",u=u)
 
+@app.route("/admin/users/<int:uid>/edit",methods=["POST"])
+@admin_required
+def edit_user(uid):
+    c=db(); u=c.execute("SELECT * FROM users WHERE id=?",(uid,)).fetchone()
+    if not u: c.close(); flash("User not found.","error"); return redirect(url_for("users"))
+    try:
+        role="SUPER_ADMIN" if request.form.get("role")=="SUPER_ADMIN" else "STAFF"
+        username=request.form.get("username","").strip()
+        if not username: raise ValueError("Username is required.")
+        clash=c.execute("SELECT id FROM users WHERE username=? AND id<>?",(username,uid)).fetchone()
+        if clash: raise ValueError("Username already exists.")
+        c.execute("UPDATE users SET full_name=?,username=?,department=?,position=?,location=?,role=? WHERE id=?",(request.form.get("full_name","").strip(),username,request.form.get("department","Project"),request.form.get("position","Other"),request.form.get("location","").strip(),role,uid))
+        c.commit(); flash("✏️ User profile, department, position and role updated.","success")
+    except Exception as e: c.rollback(); flash("User update failed: "+str(e),"error")
+    c.close(); return redirect(url_for("users"))
+
 @app.route("/admin/users/<int:uid>/reset",methods=["POST"])
 @admin_required
 def reset_user(uid):
@@ -773,6 +802,11 @@ def import_boq_xlsx(path,pid):
                     if any(x in v for x in exact): return i
                 return None
             ci,cd,cu,cq,cr=[find_col(k) for k in ("item","desc","unit","qty","rate")]
+            cs,ct=find_col("series") if False else (None,None)
+            for i,v in enumerate(header):
+                if v in ("series","section","bill section","section no","series no","series number") or "series" in v: cs=i; break
+            for i,v in enumerate(header):
+                if v in ("title","item title","work title") or "title" in v: ct=i; break
             if cd is None or cu is None or cr is None or (ci is None and cq is None): continue
             sheet_count=0
             for row_idx,row in enumerate(rows[header_idx+1:], start=header_idx+2):
@@ -801,7 +835,9 @@ def import_boq_xlsx(path,pid):
                     except Exception: pass
                 # A valid BOQ row should contain at least a unit or a numeric quantity/rate.
                 if not unit_s and qty==0 and rate==0: continue
-                c.execute("INSERT INTO boq(project_id,item_no,description,unit,rate,contract_qty,source_sheet) VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,item_no) DO UPDATE SET description=excluded.description,unit=excluded.unit,rate=excluded.rate,contract_qty=excluded.contract_qty,source_sheet=excluded.source_sheet",(pid,item_s,desc_s,unit_s,rate,qty,ws_val.title))
+                series_s="" if cs is None or cell(cs) is None else str(cell(cs)).strip()
+                title_s="" if ct is None or cell(ct) is None else str(cell(ct)).strip()
+                c.execute("INSERT INTO boq(project_id,item_no,description,unit,rate,contract_qty,source_sheet,series,title) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,item_no) DO UPDATE SET description=excluded.description,unit=excluded.unit,rate=excluded.rate,contract_qty=excluded.contract_qty,source_sheet=excluded.source_sheet,series=excluded.series,title=excluded.title",(pid,item_s,desc_s,unit_s,rate,qty,ws_val.title,series_s,title_s))
                 count+=1; sheet_count+=1
             if sheet_count: sheets.append(f"{ws_val.title} ({sheet_count})")
         c.commit()
@@ -820,7 +856,12 @@ def boq_admin(pid):
     if request.method=="POST":
         action=request.form.get("action")
         try:
-            if action=="add":c.execute("INSERT INTO boq(project_id,item_no,description,unit,rate,contract_qty) VALUES(?,?,?,?,?,?)",(pid,request.form["item_no"],request.form["description"],request.form["unit"],parse_float(request.form["rate"]),parse_float(request.form["contract_qty"])))
+            if action=="add":
+                c.execute("INSERT INTO boq(project_id,item_no,description,unit,rate,contract_qty,series,title) VALUES(?,?,?,?,?,?,?,?)",(pid,request.form["item_no"].strip(),request.form["description"].strip(),request.form.get("unit","").strip(),parse_float(request.form.get("rate")),parse_float(request.form.get("contract_qty")),request.form.get("series","").strip(),request.form.get("title","").strip()))
+            elif action=="settings":
+                c.execute("INSERT INTO boq_settings(project_id,title,revision,effective_date) VALUES(?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET title=excluded.title,revision=excluded.revision,effective_date=excluded.effective_date",(pid,request.form.get("boq_title","").strip(),request.form.get("revision","").strip(),request.form.get("effective_date") or None))
+            elif action=="edit":
+                bid=int(request.form["boq_id"]); c.execute("UPDATE boq SET item_no=?,description=?,unit=?,rate=?,contract_qty=?,series=?,title=? WHERE id=? AND project_id=?",(request.form["item_no"].strip(),request.form["description"].strip(),request.form.get("unit","").strip(),parse_float(request.form.get("rate")),parse_float(request.form.get("contract_qty")),request.form.get("series","").strip(),request.form.get("title","").strip(),bid,pid))
             elif action=="upload":
                 f=request.files.get("file")
                 if not f or not f.filename.lower().endswith((".xlsx",".xlsm")): raise ValueError("Upload an .xlsx or .xlsm BOQ file.")
@@ -837,7 +878,7 @@ def boq_admin(pid):
                 try: c.rollback()
                 except Exception: pass
             flash("BOQ import error: "+str(e),"error")
-    rows=c.execute("SELECT * FROM boq WHERE project_id=? ORDER BY item_no",(pid,)).fetchall();uploads=c.execute("SELECT * FROM boq_uploads WHERE project_id=? ORDER BY uploaded_at DESC LIMIT 10",(pid,)).fetchall();c.close();return render_template("boq.html",pid=pid,rows=rows,uploads=uploads)
+    rows=c.execute("SELECT * FROM boq WHERE project_id=? ORDER BY item_no",(pid,)).fetchall();uploads=c.execute("SELECT * FROM boq_uploads WHERE project_id=? ORDER BY uploaded_at DESC LIMIT 10",(pid,)).fetchall();settings=c.execute("SELECT * FROM boq_settings WHERE project_id=?",(pid,)).fetchone();c.close();return render_template("boq.html",pid=pid,rows=rows,uploads=uploads,settings=settings)
 
 @app.route("/admin")
 @admin_required
