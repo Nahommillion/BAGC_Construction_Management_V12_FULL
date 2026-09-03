@@ -568,7 +568,7 @@ def project(pid):
     head_users=c.execute("SELECT u.id,u.full_name,u.department,u.position,o.name org_unit_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id WHERE u.active=1 AND u.personnel_scope='HEAD_OFFICE' ORDER BY u.full_name").fetchall()
     responsibility_map={}
     for area in ['General Project','Store','Machinery','Fuel','Manpower / HR','Finance','Design','Procurement','Project Management','HSE / Safety','QA/QC','Survey','Contract Administration']:
-        responsibility_map[area]={r['user_id'] for r in c.execute("SELECT user_id FROM project_responsibilities WHERE project_id=? AND responsibility_area=? AND active=1",(pid,area)).fetchall()}
+        responsibility_map[area]=sorted({r['user_id'] for r in c.execute("SELECT user_id FROM project_responsibilities WHERE project_id=? AND responsibility_area=? AND active=1",(pid,area)).fetchall()})
     c.close()
     return render_template("project.html",pid=pid,p=p,boq_count=boq_count,machine_count=machine_count,mat_count=mat_count,actual_income=actual_income,actual_expense=actual_expense,contract_value=contract_value,physical_pct=physical_pct,schedule_pct=schedule_pct,time_variance_pct=time_variance_pct,days_remaining=days_remaining,planned_income=planned_income,income_variance=income_variance,crew_count=crew_count,project_users=project_users,head_users=head_users,responsibility_map=responsibility_map)
 
@@ -1109,7 +1109,7 @@ def project_team(pid):
     head_users=c.execute("SELECT u.id,u.full_name,u.department,u.position,o.name org_unit_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id WHERE u.active=1 AND u.personnel_scope='HEAD_OFFICE' ORDER BY u.full_name").fetchall()
     responsibility_map={}
     for area in ['General Project','Store','Machinery','Fuel','Manpower / HR','Finance','Design','Procurement','Project Management','HSE / Safety','QA/QC','Survey','Contract Administration']:
-        responsibility_map[area]={r['user_id'] for r in c.execute("SELECT user_id FROM project_responsibilities WHERE project_id=? AND responsibility_area=? AND active=1",(pid,area)).fetchall()}
+        responsibility_map[area]=sorted({r['user_id'] for r in c.execute("SELECT user_id FROM project_responsibilities WHERE project_id=? AND responsibility_area=? AND active=1",(pid,area)).fetchall()})
     c.close(); return render_template("project_team.html",pid=pid,p=p,rows=rows,project_users=project_users,head_users=head_users,responsibility_map=responsibility_map)
 
 def _request_scope_allowed(pid=None):
