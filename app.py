@@ -1366,33 +1366,57 @@ def receive_workflow_file(wfid):
     c=db(); me=current_user(); c.execute("UPDATE workflow_files SET status='RECEIVED',received_at=? WHERE id=? AND (to_user_id=? OR to_org_unit_id=?)",(dt.datetime.now().isoformat(timespec="seconds"),wfid,me["id"],me["org_unit_id"] or -1)); c.commit(); c.close(); flash("📥 File marked as received.","success"); return redirect(url_for("workflow"))
 
 def _transfer_manager(c, kind):
-    """Find the Head Office functional manager for a transfer type."""
+    """Return only the Head Office responsible person for this transfer type.
+    Never fall back to another department: Fuel -> Fuel, Store -> Store,
+    Machinery -> Machinery/Equipment, Manpower -> HR.
+    """
     patterns={
-        'material': ['Store Manager','Senior Store Officer','Store Officer','Department Head'],
-        'fuel': ['Fuel Manager','Senior Fuel Officer','Fuel Officer','Machinery Manager','Department Head'],
-        'machine': ['Machinery Manager','Equipment Manager','Senior Equipment Officer','Equipment Engineer','Department Head'],
-        'manpower': ['HR Manager','HR Head','HR Officer','Department Head'],
+        'material': ['Store Manager','Senior Store Officer','Store Officer','Store Team Leader'],
+        'fuel': ['Fuel Manager','Senior Fuel Officer','Fuel Officer','Fuel Team Leader'],
+        'machine': ['Machinery Manager','Equipment Manager','Machinery Engineer','Equipment Engineer','Senior Equipment Officer','Machinery Team Leader','Equipment Team Leader'],
+        'manpower': ['HR Manager','HR Head','HR Officer','HR Team Leader'],
     }
     for pos in patterns[kind]:
         r=c.execute("SELECT id FROM users WHERE active=1 AND personnel_scope='HEAD_OFFICE' AND lower(position)=lower(?) ORDER BY id LIMIT 1",(pos,)).fetchone()
         if r: return r['id']
-    # Last controlled fallback: active Head Office Department Head.
-    r=c.execute("SELECT id FROM users WHERE active=1 AND personnel_scope='HEAD_OFFICE' AND lower(position) LIKE '%department head%' ORDER BY id LIMIT 1").fetchone()
-    return r['id'] if r else None
+    # Controlled same-function fallback only. Never use a generic Department Head.
+    keywords={
+        'material': ['store'],
+        'fuel': ['fuel'],
+        'machine': ['machinery','equipment'],
+        'manpower': ['hr','human resource'],
+    }[kind]
+    for kw in keywords:
+        r=c.execute("SELECT id FROM users WHERE active=1 AND personnel_scope='HEAD_OFFICE' AND lower(position) LIKE ? ORDER BY id LIMIT 1",('%'+kw+'%',)).fetchone()
+        if r: return r['id']
+    return None
 
-def _transfer_project_manager(c, project_id):
-    r=c.execute("SELECT pa.manager_user_id FROM project_assignments pa JOIN users u ON u.id=pa.manager_user_id WHERE pa.project_id=? AND pa.active=1 AND u.active=1 AND u.personnel_scope='PROJECT' AND lower(pa.position) LIKE '%project manager%' ORDER BY pa.id LIMIT 1",(project_id,)).fetchone()
-    if r and r['manager_user_id']: return r['manager_user_id']
-    r=c.execute("SELECT pa.user_id FROM project_assignments pa JOIN users u ON u.id=pa.user_id WHERE pa.project_id=? AND pa.active=1 AND u.active=1 AND u.personnel_scope='PROJECT' AND lower(pa.position) LIKE '%project manager%' ORDER BY pa.id LIMIT 1",(project_id,)).fetchone()
-    return r['user_id'] if r else None
+def _transfer_domain_allowed(me, kind):
+    """Only the responsible project department may create/receive its transfer type."""
+    if me['role']=='SUPER_ADMIN':
+        return True
+    dept=(me.get('department') or '').strip().lower()
+    pos=(me.get('position') or '').strip().lower()
+    rules={
+        'material': dept=='store' or 'store' in pos,
+        'fuel': (dept=='machinery' or dept=='fuel' or 'fuel' in pos),
+        'machine': (dept=='machinery' or dept=='equipment') and 'fuel' not in pos and 'store' not in pos,
+        'manpower': dept=='hr' or 'human resource' in pos or pos.startswith('hr '),
+    }
+    return rules.get(kind, False)
+
+def _transfer_domain_name(kind):
+    return {'material':'Store','fuel':'Fuel / Fuel Team','machine':'Machinery / Equipment','manpower':'HR / Manpower'}[kind]
 
 def _seed_transfer_approval(c, kind, tid, source_pid):
+    # The Project Manager is ALWAYS taken from the SOURCE project, never the receiving project.
     pm=_transfer_project_manager(c,source_pid)
     manager=_transfer_manager(c,kind)
-    if not pm: raise ValueError('The source project has no active Project Manager assigned. Assign the Project Manager before sending a transfer.')
-    if not manager: raise ValueError('No Head Office functional manager is available for this transfer type. Assign the responsible manager first.')
-    c.execute("INSERT INTO transfer_approvals(transfer_type,transfer_id,step_order,stage,approver_user_id,status) VALUES(?,?,?,?,?,?)",(kind,tid,1,'PROJECT_MANAGER',pm,'PENDING'))
-    c.execute("INSERT INTO transfer_approvals(transfer_type,transfer_id,step_order,stage,approver_user_id,status) VALUES(?,?,?,?,?,?)",(kind,tid,2,'HEAD_OFFICE_MANAGER',manager,'PENDING'))
+    if not pm: raise ValueError('The source project has no active Project Manager assigned. The source Project Manager must approve this transfer first.')
+    if not manager: raise ValueError(f'No Head Office {_transfer_domain_name(kind)} responsible person is available. Assign the correct functional responsible person before sending this transfer.')
+    c.execute("INSERT INTO transfer_approvals(transfer_type,transfer_id,step_order,stage,approver_user_id,status) VALUES(?,?,?,?,?,?)",(kind,tid,1,'SOURCE_PROJECT_MANAGER',pm,'PENDING'))
+    c.execute("INSERT INTO transfer_approvals(transfer_type,transfer_id,step_order,stage,approver_user_id,status) VALUES(?,?,?,?,?,?)",(kind,tid,2,'HEAD_OFFICE_FUNCTIONAL',manager,'PENDING'))
+    # Keep the HO functional contact associated with the source project without making them project-team personnel.
     c.execute("INSERT OR IGNORE INTO project_responsibilities(project_id,user_id,responsibility_area,source,assigned_by,active) VALUES(?,?,?,?,?,1)",(source_pid,manager,f'Transfer Approval - {kind.title()}','Transfer Workflow',current_user()['id']))
 
 def _mark_transfer_delivered(c, kind, tid, me):
@@ -1474,6 +1498,10 @@ def transfers(pid):
         try:
             to_pid=int(request.form["to_project_id"]); date=request.form.get("date",dt.date.today().isoformat()); ref=request.form.get("reference",""); notes=request.form.get("notes","")
             if to_pid==pid: raise ValueError('Receiving project must be different from the source project.')
+            if action not in {'material','fuel','machine','manpower'}:
+                raise ValueError('Invalid transfer type.')
+            if not _transfer_domain_allowed(me, action):
+                raise ValueError(f"Only {_transfer_domain_name(action)} personnel can create a {action} transfer. A department cannot transfer another department's resource.")
             if action=="material":
                 mid=int(request.form["material_id"]); qty=parse_float(request.form.get("quantity")); unit_cost=parse_float(request.form.get("unit_cost"))
                 if qty<=0: raise ValueError('Transfer quantity must be greater than zero.')
@@ -1520,7 +1548,7 @@ def approve_transfer(pid,kind,tid):
         c.execute("UPDATE transfer_approvals SET status='APPROVED',action='APPROVE',comments=?,acted_at=? WHERE id=?",(request.form.get('comments',''),dt.datetime.now().isoformat(timespec='seconds'),step['id']))
         next_step=c.execute("SELECT * FROM transfer_approvals WHERE transfer_type=? AND transfer_id=? AND status='PENDING' ORDER BY step_order LIMIT 1",(kind,tid)).fetchone()
         if next_step:
-            flash("✅ Approval recorded. The transfer is now waiting for the Head Office functional manager." if step['stage']=='PROJECT_MANAGER' else "✅ Approval recorded. The transfer is approved and will now be delivered.","success")
+            flash("✅ Source Project Manager approval recorded. It is now waiting for the correct Head Office functional manager." if step['stage']=='SOURCE_PROJECT_MANAGER' else "✅ Functional approval recorded. The transfer is now DELIVERED and can be received by the receiving project's responsible personnel.","success")
             if step['stage']=='HEAD_OFFICE_MANAGER': _mark_transfer_delivered(c,kind,tid,me)
         c.commit()
     except Exception as e: c.rollback(); flash('Could not approve transfer: '+str(e),'error')
@@ -1548,9 +1576,8 @@ def receive_transfer(pid,kind,tid):
     if not allowed_project(pid): return redirect(url_for("dashboard"))
     c=db(); me=current_user()
     try:
-        required={'material':'Store','fuel':'Machinery','machine':'Machinery','manpower':'HR'}[kind]
-        if me['role']!='SUPER_ADMIN' and me['department'] not in (required,'Project'):
-            raise ValueError(f"Only {required} / Project personnel can receive this transfer.")
+        if not _transfer_domain_allowed(me, kind):
+            raise ValueError(f"Only {_transfer_domain_name(kind)} personnel can receive this transfer. The receiving person must belong to the same functional department as the transferred resource.")
         _receive_transfer_post(c,kind,tid,pid,me)
         c.commit(); flash("📥 Transfer received and registered in its own register and Daily Report.","success")
     except Exception as e: c.rollback(); flash('Could not receive transfer: '+str(e),'error')
