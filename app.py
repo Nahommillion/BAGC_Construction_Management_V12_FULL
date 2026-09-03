@@ -91,11 +91,14 @@ MODULE_DEPARTMENTS={
 }
 PERSONNEL_SCOPES=["HEAD_OFFICE","PROJECT"]
 REPORT_SCOPES_BY_DEPARTMENT={"Machinery":{"MACHINERY","FUEL"},"Store":{"STORE"},"HR":{"MANPOWER"},"Finance":{"FINANCE"},"Design":{"DESIGN"},"Project":{"BOQ","PROBLEMS"},"Administration":{"FINANCE"},"Consultant":{"BOQ","PROBLEMS"}}
-REQUEST_TYPES=["MATERIAL","FUEL","MACHINERY","MANPOWER","EXPENSE","DESIGN","PROCUREMENT","OTHER"]
+REQUEST_TYPES=["MATERIAL","FUEL","MACHINERY","MANPOWER","EXPENSE","DESIGN","PROCUREMENT","SUBCONTRACTOR","OTHER"]
 REQUEST_CATEGORIES={
     "MATERIAL":"Store / Material", "FUEL":"Fuel", "MACHINERY":"Machinery", "MANPOWER":"Manpower / HR",
-    "EXPENSE":"Finance / Expense", "DESIGN":"Design", "PROCUREMENT":"Procurement", "OTHER":"General"
+    "EXPENSE":"Finance / Expense", "DESIGN":"Design", "PROCUREMENT":"Procurement", "SUBCONTRACTOR":"Subcontractor", "OTHER":"General"
 }
+
+MANPOWER_REQUEST_POSITIONS=PROJECT_POSITION_CATALOG + ["Time Keeper","Store Keeper","Fuel Officer","Fuel Manager","Machine Operator","Truck Driver","General Worker"]
+SUBCONTRACTOR_WORK_TYPES=["Civil Works","Earthworks","Road Works","Drainage","Concrete Works","Masonry","Structural Works","Finishing Works","Electrical Works","Mechanical Works","Water Supply","Sewerage","Landscaping","Other"]
 
 
 @app.context_processor
@@ -195,6 +198,14 @@ def init_db():
     CREATE TABLE IF NOT EXISTS daily_transfer_logs(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,transfer_type TEXT,direction TEXT,transfer_id INTEGER,description TEXT,user_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS transfer_approvals(id INTEGER PRIMARY KEY,transfer_type TEXT,transfer_id INTEGER,step_order INTEGER,stage TEXT,approver_user_id INTEGER,status TEXT DEFAULT 'PENDING',action TEXT,comments TEXT,acted_at TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(transfer_type,transfer_id,step_order));
     CREATE TABLE IF NOT EXISTS expense_claims(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,beneficiary_user_id INTEGER,beneficiary_name TEXT,category TEXT,description TEXT,amount REAL DEFAULT 0,paid_by_company INTEGER DEFAULT 1,receipt_file TEXT,receipt_name TEXT,submitted_by INTEGER,approved_by INTEGER,status TEXT DEFAULT 'SUBMITTED',created_at TEXT DEFAULT CURRENT_TIMESTAMP,approved_at TEXT);
+    CREATE TABLE IF NOT EXISTS request_items(id INTEGER PRIMARY KEY,request_id INTEGER,description TEXT,quantity REAL DEFAULT 0,unit TEXT,rate REAL DEFAULT 0,amount REAL DEFAULT 0,position TEXT,work_type TEXT,boq_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS subcontractors(id INTEGER PRIMARY KEY,project_id INTEGER,name TEXT,contract_no TEXT,signing_date TEXT,commencement_date TEXT,end_date TEXT,contract_value REAL DEFAULT 0,description TEXT,sub_pm TEXT,sub_office_engineer TEXT,sub_office_head TEXT,sub_finance TEXT,sub_other TEXT,status TEXT DEFAULT 'ACTIVE',created_by INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS subcontractor_boq(id INTEGER PRIMARY KEY,subcontractor_id INTEGER,item_no TEXT,description TEXT,unit TEXT,quantity REAL DEFAULT 0,rate REAL DEFAULT 0,amount REAL DEFAULT 0,series TEXT DEFAULT '',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS subcontractor_daily(id INTEGER PRIMARY KEY,subcontractor_id INTEGER,date TEXT,boq_id INTEGER,quantity REAL DEFAULT 0,station_from TEXT,station_to TEXT,remarks TEXT,user_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS subcontractor_expenses(id INTEGER PRIMARY KEY,subcontractor_id INTEGER,date TEXT,boq_id INTEGER,category TEXT,description TEXT,amount REAL DEFAULT 0,reference TEXT,user_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY,project_id INTEGER,manpower_id INTEGER,date TEXT,name TEXT,employment TEXT,position TEXT,present REAL DEFAULT 0,working_hours REAL DEFAULT 0,ot_hours REAL DEFAULT 0,daily_cost REAL DEFAULT 0,status TEXT DEFAULT 'RECORDED',source TEXT DEFAULT 'PROJECT_MANPOWER',user_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(manpower_id,date));
+    CREATE TABLE IF NOT EXISTS head_office_attendance(id INTEGER PRIMARY KEY,user_id INTEGER,date TEXT,present REAL DEFAULT 0,working_hours REAL DEFAULT 0,ot_hours REAL DEFAULT 0,daily_cost REAL DEFAULT 0,status TEXT DEFAULT 'RECORDED',recorded_by INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,date));
+    CREATE TABLE IF NOT EXISTS payroll_records(id INTEGER PRIMARY KEY,project_id INTEGER,period_start TEXT,period_end TEXT,employee_scope TEXT DEFAULT 'PROJECT',employee_id INTEGER,name TEXT,employment TEXT,position TEXT,amount REAL DEFAULT 0,status TEXT DEFAULT 'PENDING',submitted_by INTEGER,finance_user_id INTEGER,paid_at TEXT,reference TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(project_id,period_start,period_end,employee_scope,employee_id));
     CREATE TABLE IF NOT EXISTS project_assignments(id INTEGER PRIMARY KEY,user_id INTEGER,project_id INTEGER,position TEXT,manager_user_id INTEGER,active INTEGER DEFAULT 1,UNIQUE(user_id,project_id));
     CREATE TABLE IF NOT EXISTS responsibilities(id INTEGER PRIMARY KEY,supervisor_user_id INTEGER,subordinate_user_id INTEGER,scope_type TEXT NOT NULL,project_id INTEGER,active INTEGER DEFAULT 1,source TEXT DEFAULT 'Manual',created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(supervisor_user_id,subordinate_user_id,scope_type,project_id));
     CREATE TABLE IF NOT EXISTS resource_requests(id INTEGER PRIMARY KEY,request_no TEXT UNIQUE,request_type TEXT,project_id INTEGER,requested_by INTEGER,requester_org_unit_id INTEGER,next_approver_user_id INTEGER,title TEXT,description TEXT,quantity REAL DEFAULT 0,unit TEXT,amount REAL DEFAULT 0,payload_json TEXT DEFAULT '{}',attachment_file TEXT,attachment_name TEXT,status TEXT DEFAULT 'SUBMITTED',approved_by INTEGER,approved_at TEXT,rejected_by INTEGER,rejected_at TEXT,rejection_reason TEXT,registered_table TEXT,registered_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -208,6 +219,16 @@ def init_db():
     c.execute("UPDATE users SET personnel_scope='HEAD_OFFICE' WHERE org_unit_id IS NOT NULL AND (personnel_scope IS NULL OR personnel_scope='PROJECT')")
     c.execute("UPDATE project_assignments SET active=0 WHERE user_id IN (SELECT id FROM users WHERE personnel_scope='HEAD_OFFICE')")
     c.execute("DELETE FROM user_projects WHERE user_id IN (SELECT id FROM users WHERE personnel_scope='HEAD_OFFICE')")
+    # V38 resource, subcontractor, attendance and payroll structures.
+    for tbl, cols in {
+        'manpower':[('crew_id','INTEGER')],
+    }.items():
+        existing=[r['name'] for r in c.execute(f"PRAGMA table_info({tbl})").fetchall()]
+        for col,typ in cols:
+            if col not in existing: c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {typ}")
+    existing_sub=[r['name'] for r in c.execute("PRAGMA table_info(subcontractors)").fetchall()]
+    for col,typ in [('sub_pm','TEXT'),('sub_office_engineer','TEXT'),('sub_office_head','TEXT'),('sub_finance','TEXT'),('sub_other','TEXT')]:
+        if col not in existing_sub: c.execute(f"ALTER TABLE subcontractors ADD COLUMN {col} {typ}")
     existing_rr=[r['name'] for r in c.execute("PRAGMA table_info(resource_requests)").fetchall()]
     for col,typ in [('current_stage',"TEXT DEFAULT 'PROJECT'"),('origin_scope',"TEXT DEFAULT 'PROJECT'"),('head_office_sent_at','TEXT'),('finalized_at','TEXT')]:
         if col not in existing_rr: c.execute(f"ALTER TABLE resource_requests ADD COLUMN {col} {typ}")
@@ -223,6 +244,8 @@ def init_db():
     if 'position' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN position TEXT")
     if 'staff_id' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN staff_id TEXT")
     if 'photo_filename' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN photo_filename TEXT")
+    if 'salary_daily_rate' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN salary_daily_rate REAL DEFAULT 0")
+    if 'salary_monthly_rate' not in existing_u: c.execute("ALTER TABLE users ADD COLUMN salary_monthly_rate REAL DEFAULT 0")
     # Workflow / project hierarchy migrations.
     existing_up=[r['name'] for r in c.execute("PRAGMA table_info(user_projects)").fetchall()]
     # project_assignments is additive and preserves legacy user_projects access.
@@ -300,7 +323,7 @@ def current_user():
 
 @app.context_processor
 def inject():
-    return {"me":current_user(),"machine_types":MACHINE_TYPES,"unit_catalog":UNIT_CATALOG,"material_categories":MATERIAL_CATEGORIES,"material_catalog":MATERIAL_CATALOG,"design_statuses":DESIGN_STATUSES,"today":dt.date.today().isoformat(),"crew_groups":CREW_GROUPS,"position_catalog":POSITION_CATALOG,"project_position_catalog":PROJECT_POSITION_CATALOG,"head_office_position_catalog":HEAD_OFFICE_POSITION_CATALOG,"request_types":REQUEST_TYPES,"request_categories":REQUEST_CATEGORIES,"can_module":can_module}
+    return {"me":current_user(),"machine_types":MACHINE_TYPES,"unit_catalog":UNIT_CATALOG,"material_categories":MATERIAL_CATEGORIES,"material_catalog":MATERIAL_CATALOG,"design_statuses":DESIGN_STATUSES,"today":dt.date.today().isoformat(),"crew_groups":CREW_GROUPS,"position_catalog":POSITION_CATALOG,"project_position_catalog":PROJECT_POSITION_CATALOG,"head_office_position_catalog":HEAD_OFFICE_POSITION_CATALOG,"request_types":REQUEST_TYPES,"request_categories":REQUEST_CATEGORIES,"manpower_request_positions":MANPOWER_REQUEST_POSITIONS,"subcontractor_work_types":SUBCONTRACTOR_WORK_TYPES,"can_module":can_module}
 
 
 def login_required(f):
@@ -367,10 +390,19 @@ def find_project_person(c,pid,term):
 
 
 def project_request_steps(c,pid,requester_id):
+    """Strict project request approval chain: Office Engineer -> Office Head -> Project Manager.
+    The requester is skipped only when they are themselves the current role.
+    The chain never uses the receiving project or an unrelated manager.
+    """
+    role_terms=[('OFFICE_ENGINEER',['Office Engineer']),('OFFICE_HEAD',['Office Head']),('PROJECT_MANAGER',['Project Manager'])]
     out=[]; used=set()
-    for stage,term in [('OFFICE_ENGINEER','Office Engineer'),('OFFICE_HEAD','Office Head'),('PROJECT_MANAGER','Project Manager')]:
-        uid=find_project_person(c,pid,term)
-        if uid and uid!=requester_id and uid not in used: out.append((stage,uid)); used.add(uid)
+    for stage,terms in role_terms:
+        uid=None
+        for term in terms:
+            uid=find_project_person(c,pid,term)
+            if uid: break
+        if uid and uid not in used and uid!=requester_id:
+            out.append((stage,uid)); used.add(uid)
     return out
 
 
@@ -783,10 +815,13 @@ def daily(pid):
         linked_fuel=c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,MAX(0,(f.opening_gauge+f.fuel_received-f.closing_gauge)-f.transfer_out-COALESCE((SELECT SUM(af.litres) FROM activity_fuel af WHERE af.fuel_log_id=f.id),0)) remaining_litres FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? AND f.date=? ORDER BY m.machine_type,m.code,f.id",(pid,default_date)).fetchall()
         linked_store=c.execute("SELECT sl.*,m.name,m.unit,MAX(0,sl.issued-COALESCE((SELECT SUM(ast.qty) FROM activity_store ast WHERE ast.store_log_id=sl.id),0)) remaining_qty FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? AND sl.date=? ORDER BY m.name",(pid,default_date)).fetchall()
         linked_finance=c.execute("SELECT fl.*,MAX(0,fl.amount-COALESCE((SELECT SUM(af.amount) FROM activity_finance af WHERE af.finance_log_id=fl.id),0)) remaining_amount FROM finance_logs fl WHERE fl.project_id=? AND fl.date=? ORDER BY fl.id",(pid,default_date)).fetchall()
+        subcontractor_daily=c.execute("SELECT sd.*,s.name subcontractor_name,sb.item_no,sb.description,sb.unit,sb.rate,(sd.quantity*sb.rate) amount FROM subcontractor_daily sd JOIN subcontractors s ON s.id=sd.subcontractor_id JOIN subcontractor_boq sb ON sb.id=sd.boq_id WHERE s.project_id=? AND sd.date=? ORDER BY sd.id DESC",(pid,default_date)).fetchall()
+        subcontractor_expenses=c.execute("SELECT se.*,s.name subcontractor_name,sb.item_no,sb.description boq_description FROM subcontractor_expenses se JOIN subcontractors s ON s.id=se.subcontractor_id LEFT JOIN subcontractor_boq sb ON sb.id=se.boq_id WHERE s.project_id=? AND se.date=? ORDER BY se.id DESC",(pid,default_date)).fetchall()
+        daily_finance=expense_income_snapshot(c,pid,default_date,default_date)
         crews=c.execute("SELECT * FROM project_crews WHERE project_id=? ORDER BY group_name,position,name",(pid,)).fetchall()
         alerts=c.execute("SELECT va.*,b.item_no,b.description FROM variation_alerts va JOIN boq b ON b.id=va.boq_id WHERE va.project_id=? ORDER BY va.id DESC LIMIT 30",(pid,)).fetchall()
         recent=c.execute("SELECT dw.*,b.item_no,b.description,b.unit,b.rate,b.series,(dw.quantity*b.rate) amount FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE dw.project_id=? ORDER BY dw.date DESC,dw.id DESC LIMIT 50",(pid,)).fetchall()
-        return render_template("daily.html",pid=pid,date=default_date,boq=boq,units=units,linked_machines=linked_machines,linked_manpower=linked_manpower,linked_fuel=linked_fuel,linked_store=linked_store,linked_finance=linked_finance,transfer_logs=c.execute("SELECT * FROM daily_transfer_logs WHERE project_id=? AND date=? ORDER BY id",(pid,default_date)).fetchall(),crews=crews,alerts=alerts,recent=recent)
+        return render_template("daily.html",pid=pid,date=default_date,boq=boq,units=units,linked_machines=linked_machines,linked_manpower=linked_manpower,linked_fuel=linked_fuel,linked_store=linked_store,linked_finance=linked_finance,transfer_logs=c.execute("SELECT * FROM daily_transfer_logs WHERE project_id=? AND date=? ORDER BY id",(pid,default_date)).fetchall(),subcontractor_daily=subcontractor_daily,subcontractor_expenses=subcontractor_expenses,daily_finance=daily_finance,crews=crews,alerts=alerts,recent=recent)
     except Exception as e:
         try: c.rollback()
         except Exception: pass
@@ -1008,6 +1043,121 @@ def finance(pid):
     if request.method=="POST":c.execute("INSERT INTO finance_logs(project_id,date,category,kind,description,amount,reference,user_id) VALUES(?,?,?,?,?,?,?,?)",(pid,request.form["date"],request.form["category"],request.form["kind"],request.form["description"],parse_float(request.form["amount"]),request.form.get("reference",""),current_user()["id"]));c.commit();flash("💰 Finance record saved.","success")
     rows=c.execute("SELECT * FROM finance_logs WHERE project_id=? ORDER BY date DESC,id DESC LIMIT 100",(pid,)).fetchall();c.close();return render_template("finance.html",pid=pid,rows=rows)
 
+# ==================== V38 ATTENDANCE / PAYROLL / SUBCONTRACT / CORPORATE FINANCE ====================
+def high_office_only():
+    u=current_user()
+    return bool(u and (u['role']=='SUPER_ADMIN' or u['position'] in ('General Manager','Operational Manager') or u['department']=='Finance'))
+
+def expense_income_snapshot(c, pid=None, start=None, end=None):
+    args=[]; where=''
+    if pid is not None: where+=' AND dw.project_id=?'; args.append(pid)
+    if start: where+=' AND dw.date>=?'; args.append(start)
+    if end: where+=' AND dw.date<=?'; args.append(end)
+    income=c.execute('SELECT COALESCE(SUM(dw.quantity*b.rate),0) FROM daily_work dw JOIN boq b ON b.id=dw.boq_id WHERE 1=1'+where,tuple(args)).fetchone()[0]
+    eargs=[]; ew=''
+    if pid is not None: ew+=' AND project_id=?'; eargs.append(pid)
+    if start: ew+=' AND date>=?'; eargs.append(start)
+    if end: ew+=' AND date<=?'; eargs.append(end)
+    manpower=c.execute('SELECT COALESCE(SUM(CASE WHEN hourly_rate>0 THEN present*working_hours*hourly_rate ELSE present*daily_rate END+normal_ot_hours*normal_ot_rate+night_ot_hours*night_ot_rate+sunday_ot_hours*sunday_ot_rate+holiday_ot_hours*holiday_ot_rate),0) FROM manpower WHERE 1=1'+ew,tuple(eargs)).fetchone()[0]
+    store=c.execute('SELECT COALESCE(SUM(issued*unit_cost),0) FROM store_logs WHERE 1=1'+ew,tuple(eargs)).fetchone()[0]
+    finance=c.execute("SELECT COALESCE(SUM(amount),0) FROM finance_logs WHERE kind='Expense'"+ew,tuple(eargs)).fetchone()[0]
+    machinery=c.execute('SELECT COALESCE(SUM(CASE WHEN m.rate_unit=\'day\' THEN CASE WHEN ml.work_hours+ml.idle_hours+ml.down_hours>0 THEN m.hourly_rate ELSE 0 END WHEN m.rate_unit=\'month\' THEN CASE WHEN ml.work_hours+ml.idle_hours+ml.down_hours>0 THEN m.hourly_rate/30.0 ELSE 0 END ELSE (ml.work_hours+CASE WHEN ml.idle_payable=1 THEN ml.idle_hours ELSE 0 END)*m.hourly_rate END),0) FROM machine_logs ml JOIN machines m ON m.id=ml.machine_id WHERE 1=1'+(' AND ml.project_id=?' if pid is not None else '')+(' AND ml.date>=?' if start else '')+(' AND ml.date<=?' if end else ''),tuple(([pid] if pid is not None else [])+([start] if start else [])+([end] if end else []))).fetchone()[0]
+    sub=c.execute('SELECT COALESCE(SUM(amount),0) FROM subcontractor_expenses se JOIN subcontractors s ON s.id=se.subcontractor_id WHERE 1=1'+((' AND s.project_id=?' if pid is not None else ''))+(' AND se.date>=?' if start else '')+(' AND se.date<=?' if end else ''),tuple(([pid] if pid is not None else [])+([start] if start else [])+([end] if end else []))).fetchone()[0]
+    return {'income':income,'manpower':manpower,'store':store,'finance':finance,'machinery':machinery,'subcontractor':sub,'expense':manpower+store+finance+machinery+sub,'profit':income-(manpower+store+finance+machinery+sub)}
+
+@app.route('/attendance',methods=['GET','POST'])
+@login_required
+def attendance():
+    me=current_user()
+    if not high_office_only() and me['department']!='HR': return redirect(url_for('dashboard'))
+    c=db(); date=request.form.get('date') or request.args.get('date') or dt.date.today().isoformat()
+    if request.method=='POST':
+        try:
+            action=request.form.get('action','project')
+            if action=='ho':
+                for uid in request.form.getlist('ho_user_id[]'):
+                    present=parse_float(request.form.get(f'ho_present_{uid}')); hrs=parse_float(request.form.get(f'ho_hours_{uid}')); ot=parse_float(request.form.get(f'ho_ot_{uid}'))
+                    u=c.execute('SELECT * FROM users WHERE id=? AND active=1 AND personnel_scope=\'HEAD_OFFICE\'',(uid,)).fetchone()
+                    if not u: continue
+                    rate=parse_float(u['salary_daily_rate'])
+                    c.execute("INSERT INTO head_office_attendance(user_id,date,present,working_hours,ot_hours,daily_cost,status,recorded_by) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,date) DO UPDATE SET present=excluded.present,working_hours=excluded.working_hours,ot_hours=excluded.ot_hours,daily_cost=excluded.daily_cost,recorded_by=excluded.recorded_by",(uid,date,present,hrs,ot,rate,'RECORDED',me['id']))
+                flash('🏢 Head Office attendance saved.','success')
+            else:
+                for mid in request.form.getlist('manpower_id[]'):
+                    mp=c.execute('SELECT * FROM manpower WHERE id=?',(mid,)).fetchone()
+                    if not mp: continue
+                    present=parse_float(request.form.get(f'present_{mid}')); hrs=parse_float(request.form.get(f'hours_{mid}')); ot=parse_float(request.form.get(f'ot_{mid}'))
+                    daily_cost=(present*hrs*mp['hourly_rate'] if mp['hourly_rate'] else present*mp['daily_rate'])
+                    c.execute("INSERT INTO attendance(project_id,manpower_id,date,name,employment,position,present,working_hours,ot_hours,daily_cost,status,source,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(manpower_id,date) DO UPDATE SET present=excluded.present,working_hours=excluded.working_hours,ot_hours=excluded.ot_hours,daily_cost=excluded.daily_cost,status='RECORDED',user_id=excluded.user_id",(mp['project_id'],mid,date,mp['name'],mp['employment'],mp['position'],present,hrs,ot,daily_cost,'RECORDED','PROJECT_MANPOWER',me['id']))
+                flash('👷 Project manpower attendance saved.','success')
+            c.commit()
+        except Exception as e: c.rollback(); flash('Attendance save failed: '+str(e),'error')
+    projects=c.execute('SELECT * FROM projects ORDER BY name').fetchall() if me['role']=='SUPER_ADMIN' or me['department'] in ('HR','Finance') else c.execute('SELECT p.* FROM projects p JOIN user_projects up ON up.project_id=p.id WHERE up.user_id=? ORDER BY p.name',(me['id'],)).fetchall()
+    selected_pid=request.args.get('project_id') or (projects[0]['id'] if projects else None)
+    mp=c.execute('SELECT mp.*,p.name project_name,COALESCE(a.present,mp.present) att_present,COALESCE(a.working_hours,mp.working_hours) att_hours,COALESCE(a.ot_hours,0) att_ot FROM manpower mp JOIN projects p ON p.id=mp.project_id LEFT JOIN attendance a ON a.manpower_id=mp.id AND a.date=? WHERE mp.project_id=? ORDER BY mp.position,mp.name',(date,selected_pid)).fetchall() if selected_pid else []
+    hos=c.execute("SELECT u.*,o.name org_unit_name,COALESCE(a.present,0) att_present,COALESCE(a.working_hours,8) att_hours,COALESCE(a.ot_hours,0) att_ot FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id LEFT JOIN head_office_attendance a ON a.user_id=u.id AND a.date=? WHERE u.active=1 AND u.personnel_scope='HEAD_OFFICE' ORDER BY u.department,u.position,u.full_name",(date,)).fetchall()
+    c.close(); return render_template('attendance.html',date=date,projects=projects,selected_pid=int(selected_pid) if selected_pid else None,mp=mp,hos=hos,high_access=high_office_only())
+
+@app.route('/finance-control',methods=['GET'])
+@login_required
+def finance_control():
+    if not high_office_only(): return redirect(url_for('dashboard'))
+    c=db(); start,end=period_bounds(request.args.get('period','month'),request.args.get('date',dt.date.today().isoformat()))
+    projects=c.execute('SELECT * FROM projects ORDER BY name').fetchall(); rows=[]
+    for p in projects:
+        x=expense_income_snapshot(c,p['id'],start.isoformat(),end.isoformat()); rows.append(dict(p,**x))
+    total=expense_income_snapshot(c,None,start.isoformat(),end.isoformat())
+    payroll=c.execute("SELECT pr.*,p.name project_name FROM payroll_records pr LEFT JOIN projects p ON p.id=pr.project_id WHERE pr.period_start=? AND pr.period_end=? ORDER BY pr.status,p.name,pr.name",(start.isoformat(),end.isoformat())).fetchall()
+    pending_pay=c.execute("SELECT COUNT(*) n FROM payroll_records WHERE status IN ('PENDING','IN_PROGRESS')").fetchone()['n']
+    c.close(); return render_template('finance_control.html',projects=rows,total=total,start=start,end=end,payroll=payroll,pending_pay=pending_pay)
+
+@app.route('/finance/payroll/generate',methods=['POST'])
+@login_required
+def generate_payroll():
+    if not high_office_only(): return redirect(url_for('dashboard'))
+    start=request.form.get('start'); end=request.form.get('end'); c=db(); me=current_user()
+    try:
+        groups=c.execute('SELECT project_id,name,employment,position,MIN(id) employee_id FROM manpower WHERE date BETWEEN ? AND ? GROUP BY project_id,name,employment,position',(start,end)).fetchall()
+        for mp in groups:
+            amt=c.execute('SELECT COALESCE(SUM(a.daily_cost),0) FROM attendance a JOIN manpower m ON m.id=a.manpower_id WHERE m.project_id=? AND m.name=? AND m.employment=? AND m.position=? AND a.date BETWEEN ? AND ?',(mp['project_id'],mp['name'],mp['employment'],mp['position'],start,end)).fetchone()[0]
+            if not amt:
+                amt=c.execute('SELECT COALESCE(SUM(CASE WHEN hourly_rate>0 THEN present*working_hours*hourly_rate ELSE present*daily_rate END+normal_ot_hours*normal_ot_rate+night_ot_hours*night_ot_rate+sunday_ot_hours*sunday_ot_rate+holiday_ot_hours*holiday_ot_rate),0) FROM manpower WHERE project_id=? AND name=? AND employment=? AND position=? AND date BETWEEN ? AND ?',(mp['project_id'],mp['name'],mp['employment'],mp['position'],start,end)).fetchone()[0]
+            c.execute("INSERT OR IGNORE INTO payroll_records(project_id,period_start,period_end,employee_scope,employee_id,name,employment,position,amount,status,submitted_by) VALUES(?,?,?,?,?,?,?,?,?,'PENDING',?)",(mp['project_id'],start,end,'PROJECT',mp['employee_id'],mp['name'],mp['employment'],mp['position'],amt,me['id']))
+        c.commit(); flash('💵 Payroll generated and sent to Finance as PENDING.','success')
+    except Exception as e: c.rollback(); flash('Payroll generation failed: '+str(e),'error')
+    c.close(); return redirect(url_for('finance_control'))
+
+@app.route('/finance/payroll/<int:rid>/status',methods=['POST'])
+@login_required
+def payroll_status(rid):
+    if not high_office_only(): return redirect(url_for('dashboard'))
+    status=request.form.get('status','IN_PROGRESS'); c=db()
+    c.execute("UPDATE payroll_records SET status=?,finance_user_id=?,paid_at=CASE WHEN ?='PAID' THEN CURRENT_TIMESTAMP ELSE paid_at END,reference=? WHERE id=?",(status,current_user()['id'],status,request.form.get('reference',''),rid)); c.commit(); c.close(); flash('Payroll payment status updated.','success'); return redirect(url_for('finance_control'))
+
+@app.route('/projects/<int:pid>/subcontractors',methods=['GET','POST'])
+@login_required
+def subcontractors(pid):
+    if not allowed_project(pid) or (not project_admin(pid) and current_user()['role']!='SUPER_ADMIN'): return redirect(url_for('project',pid=pid))
+    c=db()
+    if request.method=='POST':
+        try:
+            action=request.form.get('action','add_sub')
+            if action=='add_sub':
+                c.execute('INSERT INTO subcontractors(project_id,name,contract_no,signing_date,commencement_date,end_date,contract_value,description,sub_pm,sub_office_engineer,sub_office_head,sub_finance,sub_other,status,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(pid,request.form['name'],request.form.get('contract_no',''),request.form.get('signing_date',''),request.form.get('commencement_date',''),request.form.get('end_date',''),parse_float(request.form.get('contract_value')),request.form.get('description',''),request.form.get('sub_pm',''),request.form.get('sub_office_engineer',''),request.form.get('sub_office_head',''),request.form.get('sub_finance',''),request.form.get('sub_other',''),'ACTIVE',current_user()['id']))
+            elif action=='add_boq':
+                sid=request.form['subcontractor_id']; q=parse_float(request.form.get('quantity')); r=parse_float(request.form.get('rate')); c.execute('INSERT INTO subcontractor_boq(subcontractor_id,item_no,description,unit,quantity,rate,amount,series) VALUES(?,?,?,?,?,?,?,?)',(sid,request.form.get('item_no',''),request.form['description'],request.form.get('unit',''),q,r,q*r,request.form.get('series','')))
+            elif action=='daily':
+                sid=request.form['subcontractor_id']; c.execute('INSERT INTO subcontractor_daily(subcontractor_id,date,boq_id,quantity,station_from,station_to,remarks,user_id) VALUES(?,?,?,?,?,?,?,?)',(sid,request.form['date'],request.form['boq_id'],parse_float(request.form.get('quantity')),request.form.get('station_from',''),request.form.get('station_to',''),request.form.get('remarks',''),current_user()['id']))
+            elif action=='expense':
+                sid=request.form['subcontractor_id']; c.execute('INSERT INTO subcontractor_expenses(subcontractor_id,date,boq_id,category,description,amount,reference,user_id) VALUES(?,?,?,?,?,?,?,?)',(sid,request.form['date'],request.form['boq_id'] or None,request.form['category'],request.form['description'],parse_float(request.form.get('amount')),request.form.get('reference',''),current_user()['id']))
+            c.commit(); flash('Subcontractor record saved.','success')
+        except Exception as e: c.rollback(); flash('Subcontractor save failed: '+str(e),'error')
+    subs=c.execute('SELECT * FROM subcontractors WHERE project_id=? ORDER BY name',(pid,)).fetchall(); selected=request.args.get('sid') or (subs[0]['id'] if subs else None)
+    boq=c.execute('SELECT * FROM subcontractor_boq WHERE subcontractor_id=? ORDER BY item_no',(selected,)).fetchall() if selected else []
+    daily_rows=c.execute('SELECT sd.*,sb.item_no,sb.description,sb.unit,sb.rate,sd.quantity*sb.rate amount FROM subcontractor_daily sd JOIN subcontractor_boq sb ON sb.id=sd.boq_id WHERE sd.subcontractor_id=? ORDER BY sd.date DESC,sd.id DESC',(selected,)).fetchall() if selected else []
+    expenses=c.execute('SELECT se.*,sb.item_no,sb.description boq_description FROM subcontractor_expenses se LEFT JOIN subcontractor_boq sb ON sb.id=se.boq_id WHERE se.subcontractor_id=? ORDER BY se.date DESC,se.id DESC',(selected,)).fetchall() if selected else []
+    c.close(); return render_template('subcontractors.html',pid=pid,subs=subs,selected=selected,boq=boq,daily_rows=daily_rows,expenses=expenses)
+
 @app.route("/projects/<int:pid>/reports")
 @login_required
 def reports(pid):
@@ -1203,6 +1353,14 @@ def register_approved_request(c, row):
         if not pid: return None,None
         c.execute("INSERT INTO finance_logs(project_id,date,category,kind,description,amount,reference,user_id) VALUES(?,?,?,?,?,?,?,?)",(pid,payload.get('date',dt.date.today().isoformat()),payload.get('category','Company Expense'),'Expense',row['description'],row['amount'],row['reference'] or row['request_no'],uid))
         return 'finance_logs',c.execute("SELECT last_insert_rowid() id").fetchone()['id']
+    if typ=='SUBCONTRACTOR':
+        if not pid: return None,None
+        name=payload.get('subcontractor_name') or row['title']
+        c.execute('INSERT INTO subcontractors(project_id,name,contract_no,signing_date,commencement_date,end_date,contract_value,description,status,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)',(pid,name,payload.get('contract_no',''),payload.get('signing_date',''),payload.get('commencement_date',''),payload.get('end_date',''),row['amount'],row['description'],'ACTIVE',uid))
+        sid=c.execute('SELECT last_insert_rowid() id').fetchone()['id']
+        for item in payload.get('items',[]):
+            c.execute('INSERT INTO subcontractor_boq(subcontractor_id,item_no,description,unit,quantity,rate,amount,series) VALUES(?,?,?,?,?,?,?,?)',(sid,item.get('item_no',''),item.get('description',''),item.get('unit',''),parse_float(item.get('quantity')),parse_float(item.get('rate')),parse_float(item.get('amount')),item.get('series','')))
+        return 'subcontractors',sid
     if typ=='DESIGN':
         if not pid: return None,None
         c.execute("INSERT INTO design_items(project_id,drawing_no,title,discipline,revision,status,submitted,comments,user_id) VALUES(?,?,?,?,?,?,?,?,?)",(pid,payload.get('drawing_no',''),row['title'],payload.get('discipline','General'),payload.get('revision',''),payload.get('status','Submitted'),payload.get('submitted',dt.date.today().isoformat()),row['description'],uid))
@@ -1226,7 +1384,7 @@ def resource_requests(pid=None):
             typ=request.form.get('request_type','OTHER'); rpid=request.form.get('project_id') or pid or None
             if typ not in REQUEST_TYPES: raise ValueError('Invalid request type.')
             dept=me['department']
-            permitted={'MATERIAL':{'Store','Project'},'PROCUREMENT':{'Store','Project','Administration'},'FUEL':{'Machinery','Project'},'MACHINERY':{'Machinery','Project'},'MANPOWER':{'HR','Project'},'EXPENSE':{'Finance','Project','Consultant'},'DESIGN':{'Design','Project'},'OTHER':set(DEPARTMENTS)}
+            permitted={'MATERIAL':{'Store','Project'},'PROCUREMENT':{'Store','Project','Administration'},'FUEL':{'Machinery','Project'},'MACHINERY':{'Machinery','Project'},'MANPOWER':{'HR','Project'},'EXPENSE':{'Finance','Project','Consultant'},'DESIGN':{'Design','Project'},'SUBCONTRACTOR':{'Project','Administration'},'OTHER':set(DEPARTMENTS)}
             if me['role']!='SUPER_ADMIN' and dept not in permitted.get(typ,set()): raise ValueError(f'{typ} requests are not enabled for the {dept} department.')
             if rpid and not allowed_project(int(rpid)): raise ValueError('You are not assigned to the selected project.')
             title=request.form.get('title','').strip(); desc=request.form.get('description','').strip()
@@ -1237,11 +1395,37 @@ def resource_requests(pid=None):
                 if ext not in ALLOWED_FILE_EXT: raise ValueError('Unsupported attachment type.')
                 stored=f"request_{dt.datetime.now().strftime('%Y%m%d%H%M%S')}_{me['id']}_{secure_filename(attachment.filename)}"; attachment.save(os.path.join(WORKFLOW_FILES,stored)); original=attachment.filename
             payload={k:v for k,v in request.form.items() if k not in {'request_type','project_id','title','description','quantity','unit','amount'}}
+            if typ=='SUBCONTRACTOR':
+                payload['subcontractor_name']=request.form.get('subcontractor_name','').strip()
+                payload['contract_no']=request.form.get('contract_no','').strip()
+                payload['signing_date']=request.form.get('signing_date','')
+                payload['commencement_date']=request.form.get('commencement_date','')
+                payload['end_date']=request.form.get('end_date','')
+                if not payload['subcontractor_name']: raise ValueError('Subcontractor name is required.')
+            if typ=='MANPOWER':
+                position=request.form.get('position','').strip()
+                if not position: raise ValueError('Select the manpower position you are requesting.')
+                payload['position']=position
+                payload['employment']=request.form.get('employment','Temporary')
+            # Resource requests can carry multiple line items, each with quantity and rate.
+            item_descs=request.form.getlist('item_description[]'); item_qtys=request.form.getlist('item_quantity[]'); item_units=request.form.getlist('item_unit[]'); item_rates=request.form.getlist('item_rate[]')
+            request_items=[]
+            for i,desc_i in enumerate(item_descs):
+                if not desc_i.strip(): continue
+                q=parse_float(item_qtys[i] if i<len(item_qtys) else 0); r=parse_float(item_rates[i] if i<len(item_rates) else 0); u=item_units[i] if i<len(item_units) else ''
+                request_items.append({'description':desc_i.strip(),'quantity':q,'unit':u,'rate':r,'amount':q*r})
+            if request_items:
+                payload['items']=request_items
+                total=sum(x['amount'] for x in request_items)
+                if total>0: request_amount=total
+            else: request_amount=parse_float(request.form.get('amount'))
             steps=project_request_steps(c,int(rpid),me['id']) if rpid else []
             approver=steps[0][1] if steps else request_approver(c,me['id'],int(rpid) if rpid else None)
             count=c.execute("SELECT COUNT(*) FROM resource_requests").fetchone()[0]+1; no=f"REQ-{dt.date.today().year}-{count:05d}"
-            c.execute("INSERT INTO resource_requests(request_no,request_type,project_id,requested_by,requester_org_unit_id,next_approver_user_id,title,description,quantity,unit,amount,payload_json,attachment_file,attachment_name,current_stage,origin_scope) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(no,typ,int(rpid) if rpid else None,me['id'],me['org_unit_id'],approver,title,desc,parse_float(request.form.get('quantity')),request.form.get('unit',''),parse_float(request.form.get('amount')),json.dumps(payload),stored,original,'PROJECT' if rpid else 'HEAD_OFFICE','PROJECT' if rpid else 'HEAD_OFFICE'))
+            c.execute("INSERT INTO resource_requests(request_no,request_type,project_id,requested_by,requester_org_unit_id,next_approver_user_id,title,description,quantity,unit,amount,payload_json,attachment_file,attachment_name,current_stage,origin_scope) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(no,typ,int(rpid) if rpid else None,me['id'],me['org_unit_id'],approver,title,desc,parse_float(request.form.get('quantity')),request.form.get('unit',''),request_amount,json.dumps(payload),stored,original,'PROJECT' if rpid else 'HEAD_OFFICE','PROJECT' if rpid else 'HEAD_OFFICE'))
             rid=c.execute("SELECT last_insert_rowid() id").fetchone()['id']
+            for item in request_items:
+                c.execute("INSERT INTO request_items(request_id,description,quantity,unit,rate,amount,position,work_type,boq_id) VALUES(?,?,?,?,?,?,?,?,?)",(rid,item['description'],item['quantity'],item['unit'],item['rate'],item['amount'],request.form.get('position',''),request.form.get('work_type',''),request.form.get('boq_id') or None))
             for i,(stage,uid) in enumerate(steps,1): c.execute("INSERT INTO request_steps(request_id,step_order,stage,assigned_user_id,status) VALUES(?,?,?,?,?)",(rid,i,stage,uid,'PENDING'))
             if not steps and approver: c.execute("INSERT INTO request_steps(request_id,step_order,stage,assigned_user_id,status) VALUES(?,?,?,?,?)",(rid,1,'HEAD_OFFICE_MANAGER',approver,'PENDING'))
             c.commit(); flash(f'📨 {no} submitted. It entered the approval chain.','success')
@@ -1776,6 +1960,7 @@ def add_user():
                 photo_path=os.path.join(USER_PHOTOS,filename)
                 photo.save(photo_path)
                 c.execute("UPDATE users SET staff_id=?,photo_filename=? WHERE id=?",(staff_id,filename,uid))
+                c.execute("UPDATE users SET salary_daily_rate=?,salary_monthly_rate=? WHERE id=?",(parse_float(request.form.get('salary_daily_rate')),parse_float(request.form.get('salary_monthly_rate')),uid))
                 if scope=='PROJECT':
                     for pid2 in request.form.getlist('project_ids'):
                         c.execute('INSERT OR IGNORE INTO user_projects(user_id,project_id) VALUES(?,?)',(uid,pid2))
@@ -1853,6 +2038,7 @@ def edit_user(uid):
         if scope=='HEAD_OFFICE' and not org_id: raise ValueError('Head Office personnel must have a Head Office department/team.')
         if scope=='PROJECT': org_id=None
         c.execute("UPDATE users SET full_name=?,username=?,department=?,position=?,location=?,phone=?,email=?,role=?,org_unit_id=?,reports_to_user_id=?,personnel_scope=? WHERE id=?",(request.form.get('full_name','').strip(),username,request.form.get('department','Project'),request.form.get('position','Other'),request.form.get('location','').strip(),request.form.get('phone','').strip(),request.form.get('email','').strip(),role,org_id,request.form.get('reports_to_user_id') or None,scope,uid))
+        c.execute("UPDATE users SET salary_daily_rate=?,salary_monthly_rate=? WHERE id=?",(parse_float(request.form.get('salary_daily_rate')),parse_float(request.form.get('salary_monthly_rate')),uid))
         if scope=='HEAD_OFFICE':
             c.execute('UPDATE project_assignments SET active=0 WHERE user_id=?',(uid,))
             c.execute('DELETE FROM user_projects WHERE user_id=?',(uid,))
@@ -2080,6 +2266,18 @@ if __name__=="__main__":app.run(host="0.0.0.0",port=int(os.environ.get("PORT",50
 
 
 # ==================== V27 PROJECT ADMIN / HEAD OFFICE ROUTING ====================
+def request_ho_target_allowed(request_type, target):
+    if not target or target['personnel_scope']!='HEAD_OFFICE': return False
+    dept=(target['department'] or '').lower(); pos=(target['position'] or '').lower()
+    if request_type=='FUEL': return ('machinery' in dept or 'fuel' in pos) and ('fuel' in pos or 'equipment' in pos or 'machinery' in pos)
+    if request_type=='MATERIAL': return 'store' in dept or 'store' in pos
+    if request_type=='MACHINERY': return (('machinery' in dept or 'equipment' in dept) and 'fuel' not in pos and 'store' not in pos) or 'machinery' in pos or 'equipment' in pos
+    if request_type=='MANPOWER': return 'hr' in dept or 'human resource' in dept or 'hr' in pos
+    if request_type=='EXPENSE': return 'finance' in dept or 'finance' in pos or 'account' in pos or 'cash' in pos
+    if request_type=='DESIGN': return 'design' in dept or 'design' in pos
+    if request_type in ('PROCUREMENT','SUBCONTRACTOR'): return 'contract' in dept or 'procurement' in dept or 'contract' in pos or 'procurement' in pos
+    return True
+
 @app.route('/requests/<int:rid>/send-head-office', methods=['POST'])
 @login_required
 def send_request_head_office(rid):
@@ -2089,6 +2287,7 @@ def send_request_head_office(rid):
     try:
         uid=int(request.form.get('head_office_user_id') or 0); target=c.execute("SELECT * FROM users WHERE id=? AND active=1 AND personnel_scope='HEAD_OFFICE'",(uid,)).fetchone()
         if not target: raise ValueError('Select a Head Office recipient. Only Head Office personnel can receive this stage.')
+        if not request_ho_target_allowed(row['request_type'],target): raise ValueError(f'Head Office recipient is not responsible for {row["request_type"]}. Select the matching functional responsible person.')
         maxstep=c.execute("SELECT COALESCE(MAX(step_order),0) n FROM request_steps WHERE request_id=?",(rid,)).fetchone()['n']
         c.execute("INSERT INTO request_steps(request_id,step_order,stage,assigned_user_id,to_org_unit_id,department,status,action,comments) VALUES(?,?,?,?,?,?,?,?,?)",(rid,maxstep+1,'HEAD_OFFICE_REVIEW',uid,target['org_unit_id'],target['department'],'PENDING','SENT',request.form.get('comments','Sent by Project Manager')))
         c.execute("UPDATE resource_requests SET next_approver_user_id=?,current_stage='HEAD_OFFICE_REVIEW',status='HEAD_OFFICE_REVIEW',head_office_sent_at=CURRENT_TIMESTAMP WHERE id=?",(uid,rid)); c.commit(); flash(f'📤 {row["request_no"]} sent to {target["full_name"]} in Head Office.','success')
@@ -2103,6 +2302,7 @@ def forward_request_head_office(rid):
     try:
         uid=int(request.form.get('head_office_user_id') or 0); target=c.execute("SELECT * FROM users WHERE id=? AND active=1 AND personnel_scope='HEAD_OFFICE'",(uid,)).fetchone()
         if not target: raise ValueError('Select another Head Office recipient. Only Head Office personnel can receive this stage.')
+        if not request_ho_target_allowed(row['request_type'],target): raise ValueError(f'Head Office recipient is not responsible for {row["request_type"]}.')
         maxstep=c.execute("SELECT COALESCE(MAX(step_order),0) n FROM request_steps WHERE request_id=?",(rid,)).fetchone()['n']
         oldstep=current_request_step(c,rid)
         if oldstep: c.execute("UPDATE request_steps SET status='FORWARDED',action='FORWARDED',comments=?,acted_at=CURRENT_TIMESTAMP WHERE id=?",(request.form.get('comments','Forwarded by Head Office'),oldstep['id']))
