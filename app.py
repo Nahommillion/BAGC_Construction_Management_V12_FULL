@@ -1395,8 +1395,8 @@ def _transfer_domain_allowed(me, kind):
     """Only the responsible project department may create/receive its transfer type."""
     if me['role']=='SUPER_ADMIN':
         return True
-    dept=(me.get('department') or '').strip().lower()
-    pos=(me.get('position') or '').strip().lower()
+    dept=(me['department'] or '').strip().lower()
+    pos=(me['position'] or '').strip().lower()
     rules={
         'material': dept=='store' or 'store' in pos,
         'fuel': (dept=='machinery' or dept=='fuel' or 'fuel' in pos),
@@ -1536,7 +1536,8 @@ def transfers(pid):
     mp_in=c.execute("SELECT mt.*,p.name from_project,fu.full_name sender FROM manpower_transfers mt JOIN projects p ON p.id=mt.from_project_id LEFT JOIN users fu ON fu.id=mt.sent_by WHERE mt.to_project_id=? ORDER BY mt.sent_at DESC",(pid,)).fetchall()
     mach_in=c.execute("SELECT mt.*,p.name from_project,m.code,m.machine_type FROM machine_transfers mt JOIN projects p ON p.id=mt.from_project_id JOIN machines m ON m.id=mt.machine_id WHERE mt.to_project_id=? ORDER BY mt.sent_at DESC",(pid,)).fetchall()
     approvals=c.execute("SELECT ta.*,u.full_name approver,p.name source_project FROM transfer_approvals ta JOIN users u ON u.id=ta.approver_user_id LEFT JOIN material_transfers mt ON ta.transfer_type='material' AND ta.transfer_id=mt.id LEFT JOIN fuel_transfers ft ON ta.transfer_type='fuel' AND ta.transfer_id=ft.id LEFT JOIN machine_transfers mch ON ta.transfer_type='machine' AND ta.transfer_id=mch.id LEFT JOIN manpower_transfers mp ON ta.transfer_type='manpower' AND ta.transfer_id=mp.id LEFT JOIN projects p ON p.id=COALESCE(mt.from_project_id,ft.from_project_id,mch.from_project_id,mp.from_project_id) WHERE ta.approver_user_id=? AND ta.status='PENDING' ORDER BY ta.created_at DESC",(me['id'],)).fetchall()
-    c.close(); return render_template("transfers.html",pid=pid,projects=projects,materials=materials,machines=machines,outgoing=outgoing,incoming=incoming,fuel_out=fuel_out,fuel_in=fuel_in,mach_out=mach_out,mach_in=mach_in,mp_out=mp_out,mp_in=mp_in,approvals=approvals)
+    source_project_name=c.execute("SELECT name FROM projects WHERE id=?",(pid,)).fetchone()[0]
+    c.close(); return render_template("transfers.html",pid=pid,source_project_name=source_project_name,projects=projects,materials=materials,machines=machines,outgoing=outgoing,incoming=incoming,fuel_out=fuel_out,fuel_in=fuel_in,mach_out=mach_out,mach_in=mach_in,mp_out=mp_out,mp_in=mp_in,approvals=approvals)
 
 @app.route("/projects/<int:pid>/transfers/<string:kind>/<int:tid>/approve",methods=["POST"])
 @login_required
@@ -1549,7 +1550,7 @@ def approve_transfer(pid,kind,tid):
         next_step=c.execute("SELECT * FROM transfer_approvals WHERE transfer_type=? AND transfer_id=? AND status='PENDING' ORDER BY step_order LIMIT 1",(kind,tid)).fetchone()
         if next_step:
             flash("✅ Source Project Manager approval recorded. It is now waiting for the correct Head Office functional manager." if step['stage']=='SOURCE_PROJECT_MANAGER' else "✅ Functional approval recorded. The transfer is now DELIVERED and can be received by the receiving project's responsible personnel.","success")
-            if step['stage']=='HEAD_OFFICE_MANAGER': _mark_transfer_delivered(c,kind,tid,me)
+            if step['stage']=='HEAD_OFFICE_FUNCTIONAL': _mark_transfer_delivered(c,kind,tid,me)
         c.commit()
     except Exception as e: c.rollback(); flash('Could not approve transfer: '+str(e),'error')
     finally: c.close()
