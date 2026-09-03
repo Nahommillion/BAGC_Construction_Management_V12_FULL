@@ -23,7 +23,7 @@ MAX_UPLOAD_MB=25
 app=Flask(__name__)
 app.secret_key=os.environ.get("SECRET_KEY","bagc-change-this-secret")
 
-DEPARTMENTS=["Administration","Design","Machinery","Finance","HR","Store","Project","Consultant"]
+DEPARTMENTS=["Administration","Design","Machinery","Finance","HR","Store","Project","Consultant","Office","Survey Team","Supporting Staff","Other"]
 HEAD_OFFICE_STRUCTURE=[
 ("General Manager",None,"Management"),
 ("Operational Manager","General Manager","Management"),
@@ -78,7 +78,9 @@ MATERIAL_CATALOG=[
 "Safety Helmet","Safety Vest","Safety Boot","Safety Glove","Safety Goggles","Ear Plug","Dust Mask","Harness","Reflective Tape","Barricade","Warning Sign","Cones","Fire Extinguisher","First Aid Kit",
 "Other"]
 CREW_GROUPS=["Project Management","Key Staff","Earthwork Crew","Structure Crew","Road/Culvert Crew","Equipment / Machinery","Store","DL","Data Collector","Survey Team","Supporting Staff","Office Staff","Skilled Labour","Semi-Skilled Labour","Non-Skilled Labour","Security / General Support"]
-POSITION_CATALOG=["Project Manager","Deputy Project Manager","Construction Manager","Site Engineer","Office Engineer","Quantity Surveyor","Planning Engineer","Design Engineer","QA/QC Engineer","Materials Engineer","Surveyor","Survey Assistant","HSE Officer","Foreman","Earthwork Foreman","Structure Foreman","Road Foreman","DL","Data Collector","Store Keeper","Store Assistant","Mechanic","Electrician","Plumber","Mason","Carpenter","Steel Fixer","Welder","Painter","Aluminium Worker","Equipment Operator","Driver","Labourer","Security Guard","Cleaner","Office Assistant","Document Controller","Accountant","Procurement Officer","Other","Office Head","Senior Store Officer","Senior Equipment Officer","Senior Fuel Officer","HR Head","Finance Head","Design Head"]
+POSITION_CATALOG=["Project Manager","Deputy Project Manager","Construction Manager","Office Head","Office Engineer","Site Engineer","Assistant Site Engineer","Supporting Staff","Quantity Surveyor","Planning Engineer","Design Engineer","Structural Engineer","Civil Engineer","Architectural Engineer","Electrical Engineer","Mechanical Engineer","Materials Engineer","Survey Engineer","Surveyor","Survey Assistant","Assistant Surveyor","HSE Manager","HSE Officer","Environmental Officer","QA/QC Manager","QA/QC Engineer","QA/QC Inspector","Laboratory Technician","Foreman","Earthwork Foreman","Structure Foreman","Road Foreman","DL","Data Collector","Store Manager","Store Keeper","Store Assistant","Equipment Manager","Equipment Engineer","Equipment Supervisor","Senior Equipment Officer","Senior Fuel Officer","Mechanic","Electrician","Plumber","Mason","Carpenter","Steel Fixer","Welder","Painter","Aluminium Worker","Equipment Operator","Driver","Labourer","Security Guard","Cleaner","Office Assistant","Document Controller","Accountant","Finance Officer","Cashier","Procurement Officer","Contract Administrator","HR Manager","HR Officer","HR Head","Training Officer","IT/System Administrator","Legal/Compliance Officer","Senior Store Officer","Finance Head","Design Head","Other"]
+PROJECT_POSITION_CATALOG=["Project Manager","Deputy Project Manager","Construction Manager","Office Head","Office Engineer","Site Engineer","Assistant Site Engineer","Supporting Staff","Quantity Surveyor","Planning Engineer","Design Engineer","Structural Engineer","Civil Engineer","Architectural Engineer","Electrical Engineer","Mechanical Engineer","Materials Engineer","Survey Engineer","Surveyor","Survey Assistant","Assistant Surveyor","HSE Manager","HSE Officer","Environmental Officer","QA/QC Manager","QA/QC Engineer","QA/QC Inspector","Laboratory Technician","Foreman","Earthwork Foreman","Structure Foreman","Road Foreman","DL","Data Collector","Store Manager","Store Keeper","Store Assistant","Equipment Manager","Equipment Engineer","Equipment Supervisor","Senior Equipment Officer","Senior Fuel Officer","Mechanic","Electrician","Plumber","Mason","Carpenter","Steel Fixer","Welder","Painter","Aluminium Worker","Equipment Operator","Driver","Labourer","Security Guard","Cleaner","Office Assistant","Document Controller","Accountant","Finance Officer","Cashier","Procurement Officer","Contract Administrator","HR Manager","HR Officer","Training Officer","Other"]
+HEAD_OFFICE_POSITION_CATALOG=["General Manager","Operational Manager","Department Head","Team Leader","Senior Engineer","Engineer","Senior Quantity Surveyor","Quantity Surveyor","Senior Planning Engineer","Planning Engineer","Senior Design Engineer","Design Engineer","Senior QA/QC Engineer","QA/QC Engineer","HSE Manager","HSE Engineer","Senior Survey Engineer","Survey Engineer","Surveyor","Contract Manager","Contract Administrator","Procurement Manager","Procurement Officer","Equipment Manager","Senior Equipment Officer","Equipment Engineer","Machinery Manager","Machinery Engineer","Fuel Manager","Senior Fuel Officer","Fuel Officer","Store Manager","Senior Store Officer","Store Officer","HR Manager","HR Head","HR Officer","Recruitment Officer","Training & Performance Officer","Finance Manager","Finance Head","Senior Accountant","Accountant","Finance Officer","Cash & Treasury Officer","Budget & Cost Control Officer","Administration Manager","Administration Officer","Document Controller","IT/System Administrator","Legal & Compliance Officer","Supporting Staff","Other"]
 DESIGN_STATUSES=["Draft","Submitted","Under Review","Approved","Approved with Comments","Revise & Resubmit","Rejected","As-Built","Handed Over"]
 
 # Strict module visibility: ordinary personnel only see the module owned by their department.
@@ -109,7 +111,7 @@ def db():
     return c
 
 
-DEPT_CODES={'Administration':'ADM','Design':'DSN','Machinery':'MCH','Finance':'FIN','HR':'HR','Store':'STR','Project':'PRJ'}
+DEPT_CODES={'Administration':'ADM','Design':'DSN','Machinery':'MCH','Finance':'FIN','HR':'HR','Store':'STR','Project':'PRJ','Office':'OFC','Survey Team':'SRV','Supporting Staff':'SUP','Other':'OTH'}
 def make_staff_id(department, seq):
     code=DEPT_CODES.get(department,'STF')
     return f"BAGC-{code}-{dt.date.today().year}-{seq:04d}"
@@ -269,7 +271,7 @@ def current_user():
 
 @app.context_processor
 def inject():
-    return {"me":current_user(),"machine_types":MACHINE_TYPES,"unit_catalog":UNIT_CATALOG,"material_categories":MATERIAL_CATEGORIES,"material_catalog":MATERIAL_CATALOG,"design_statuses":DESIGN_STATUSES,"today":dt.date.today().isoformat(),"crew_groups":CREW_GROUPS,"position_catalog":POSITION_CATALOG,"request_types":REQUEST_TYPES,"request_categories":REQUEST_CATEGORIES,"can_module":can_module}
+    return {"me":current_user(),"machine_types":MACHINE_TYPES,"unit_catalog":UNIT_CATALOG,"material_categories":MATERIAL_CATEGORIES,"material_catalog":MATERIAL_CATALOG,"design_statuses":DESIGN_STATUSES,"today":dt.date.today().isoformat(),"crew_groups":CREW_GROUPS,"position_catalog":POSITION_CATALOG,"project_position_catalog":PROJECT_POSITION_CATALOG,"head_office_position_catalog":HEAD_OFFICE_POSITION_CATALOG,"request_types":REQUEST_TYPES,"request_categories":REQUEST_CATEGORIES,"can_module":can_module}
 
 
 def login_required(f):
