@@ -81,6 +81,18 @@ CREW_GROUPS=["Project Management","Key Staff","Earthwork Crew","Structure Crew",
 POSITION_CATALOG=["Project Manager","Deputy Project Manager","Construction Manager","Site Engineer","Office Engineer","Quantity Surveyor","Planning Engineer","Design Engineer","QA/QC Engineer","Materials Engineer","Surveyor","Survey Assistant","HSE Officer","Foreman","Earthwork Foreman","Structure Foreman","Road Foreman","DL","Data Collector","Store Keeper","Store Assistant","Mechanic","Electrician","Plumber","Mason","Carpenter","Steel Fixer","Welder","Painter","Aluminium Worker","Equipment Operator","Driver","Labourer","Security Guard","Cleaner","Office Assistant","Document Controller","Accountant","Procurement Officer","Other"]
 DESIGN_STATUSES=["Draft","Submitted","Under Review","Approved","Approved with Comments","Revise & Resubmit","Rejected","As-Built","Handed Over"]
 
+# Strict module visibility: ordinary personnel only see the module owned by their department.
+# Project personnel receive Project tools; cross-department work is handled through Workflow/Requests.
+MODULE_DEPARTMENTS={
+    "Administration":"Administration", "Design":"Design", "Machinery":"Machinery",
+    "Finance":"Finance", "HR":"HR", "Store":"Store", "Project":"Project", "Consultant":"Consultant"
+}
+REQUEST_TYPES=["MATERIAL","FUEL","MACHINERY","MANPOWER","EXPENSE","DESIGN","PROCUREMENT","OTHER"]
+REQUEST_CATEGORIES={
+    "MATERIAL":"Store / Material", "FUEL":"Fuel", "MACHINERY":"Machinery", "MANPOWER":"Manpower / HR",
+    "EXPENSE":"Finance / Expense", "DESIGN":"Design", "PROCUREMENT":"Procurement", "OTHER":"General"
+}
+
 
 @app.context_processor
 def template_helpers():
@@ -153,6 +165,8 @@ def init_db():
     CREATE TABLE IF NOT EXISTS machine_transfers(id INTEGER PRIMARY KEY,from_project_id INTEGER,to_project_id INTEGER,machine_id INTEGER,date TEXT,notes TEXT,sent_by INTEGER,received_by INTEGER,status TEXT DEFAULT 'SENT',sent_at TEXT DEFAULT CURRENT_TIMESTAMP,received_at TEXT);
     CREATE TABLE IF NOT EXISTS expense_claims(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,beneficiary_user_id INTEGER,beneficiary_name TEXT,category TEXT,description TEXT,amount REAL DEFAULT 0,paid_by_company INTEGER DEFAULT 1,receipt_file TEXT,receipt_name TEXT,submitted_by INTEGER,approved_by INTEGER,status TEXT DEFAULT 'SUBMITTED',created_at TEXT DEFAULT CURRENT_TIMESTAMP,approved_at TEXT);
     CREATE TABLE IF NOT EXISTS project_assignments(id INTEGER PRIMARY KEY,user_id INTEGER,project_id INTEGER,position TEXT,manager_user_id INTEGER,active INTEGER DEFAULT 1,UNIQUE(user_id,project_id));
+    CREATE TABLE IF NOT EXISTS responsibilities(id INTEGER PRIMARY KEY,supervisor_user_id INTEGER,subordinate_user_id INTEGER,scope_type TEXT NOT NULL,project_id INTEGER,active INTEGER DEFAULT 1,source TEXT DEFAULT 'Manual',created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(supervisor_user_id,subordinate_user_id,scope_type,project_id));
+    CREATE TABLE IF NOT EXISTS resource_requests(id INTEGER PRIMARY KEY,request_no TEXT UNIQUE,request_type TEXT,project_id INTEGER,requested_by INTEGER,requester_org_unit_id INTEGER,next_approver_user_id INTEGER,title TEXT,description TEXT,quantity REAL DEFAULT 0,unit TEXT,amount REAL DEFAULT 0,payload_json TEXT DEFAULT '{}',attachment_file TEXT,attachment_name TEXT,status TEXT DEFAULT 'SUBMITTED',approved_by INTEGER,approved_at TEXT,rejected_by INTEGER,rejected_at TEXT,rejection_reason TEXT,registered_table TEXT,registered_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     ''')
     # Safe migrations for databases created by earlier BAGC versions.
     existing_bq=[r['name'] for r in c.execute("PRAGMA table_info(boq)").fetchall()]
@@ -203,6 +217,12 @@ def init_db():
     if 'rate_unit' not in existing_m: c.execute("ALTER TABLE machines ADD COLUMN rate_unit TEXT DEFAULT 'hr'")
     for col,typ in [('assignment_start_date','TEXT'),('assignment_start_hour','REAL DEFAULT 0'),('assignment_end_date','TEXT'),('assignment_end_hour','REAL'),('total_signed_hours','REAL DEFAULT 0'),('hours_used','REAL DEFAULT 0'),('lifecycle_status',"TEXT DEFAULT 'ACTIVE'"),('assignment_signed_by','INTEGER'),('assignment_ended_by','INTEGER'),('assignment_ended_at','TEXT')]:
         if col not in existing_m: c.execute(f"ALTER TABLE machines ADD COLUMN {col} {typ}")
+    # New V26 responsibility/request workflow tables are created above; normalize legacy hierarchy into explicit responsibility links.
+    for r in c.execute("SELECT id,reports_to_user_id,org_unit_id FROM users WHERE active=1 AND reports_to_user_id IS NOT NULL").fetchall():
+        c.execute("INSERT OR IGNORE INTO responsibilities(supervisor_user_id,subordinate_user_id,scope_type,project_id,source) VALUES(?,?,?,NULL,?)",(r['reports_to_user_id'],r['id'],'HEAD_OFFICE','Hierarchy'))
+    for r in c.execute("SELECT user_id,project_id,manager_user_id FROM project_assignments WHERE active=1 AND manager_user_id IS NOT NULL").fetchall():
+        c.execute("INSERT OR IGNORE INTO responsibilities(supervisor_user_id,subordinate_user_id,scope_type,project_id,source) VALUES(?,?,?,?,?)",(r['manager_user_id'],r['user_id'],'PROJECT',r['project_id'],'Project Assignment'))
+
     for g in CREW_GROUPS: c.execute("INSERT OR IGNORE INTO crew_groups(name) VALUES(?)",(g,))
     for pos in POSITION_CATALOG: c.execute("INSERT OR IGNORE INTO crew_positions(name) VALUES(?)",(pos,))
     for g in CREW_GROUPS: c.execute("INSERT OR IGNORE INTO crew_group_capacity(group_name) VALUES(?)",(g,))
@@ -235,7 +255,7 @@ def current_user():
 
 @app.context_processor
 def inject():
-    return {"me":current_user(),"machine_types":MACHINE_TYPES,"unit_catalog":UNIT_CATALOG,"material_categories":MATERIAL_CATEGORIES,"material_catalog":MATERIAL_CATALOG,"design_statuses":DESIGN_STATUSES,"today":dt.date.today().isoformat(),"crew_groups":CREW_GROUPS,"position_catalog":POSITION_CATALOG}
+    return {"me":current_user(),"machine_types":MACHINE_TYPES,"unit_catalog":UNIT_CATALOG,"material_categories":MATERIAL_CATEGORIES,"material_catalog":MATERIAL_CATALOG,"design_statuses":DESIGN_STATUSES,"today":dt.date.today().isoformat(),"crew_groups":CREW_GROUPS,"position_catalog":POSITION_CATALOG,"request_types":REQUEST_TYPES,"request_categories":REQUEST_CATEGORIES,"can_module":can_module}
 
 
 def login_required(f):
@@ -267,8 +287,30 @@ def can_module(module):
     u=current_user()
     if not u:return False
     if u["role"]=="SUPER_ADMIN":return True
-    if u["department"]=="Project":return True
-    return u["department"]==module
+    return MODULE_DEPARTMENTS.get(module)==u["department"]
+
+
+def responsibility_users(user_id, scope_type=None, project_id=None):
+    c=db()
+    q="SELECT r.*,u.full_name,u.staff_id,u.department,u.position,p.name project_name,o.name org_unit_name FROM responsibilities r JOIN users u ON u.id=r.subordinate_user_id LEFT JOIN projects p ON p.id=r.project_id LEFT JOIN org_units o ON o.id=u.org_unit_id WHERE r.supervisor_user_id=? AND r.active=1"
+    args=[user_id]
+    if scope_type: q+=" AND r.scope_type=?"; args.append(scope_type)
+    if project_id is not None: q+=" AND r.project_id=?"; args.append(project_id)
+    rows=c.execute(q+" ORDER BY r.scope_type,p.name,u.full_name",tuple(args)).fetchall(); c.close(); return rows
+
+def user_can_approve_request(me, row):
+    if me["role"]=="SUPER_ADMIN": return True
+    return row["next_approver_user_id"]==me["id"]
+
+def request_approver(c, requester_id, project_id=None):
+    # Project requests stay under the project chain; Head Office requests stay under the Head Office chain.
+    if project_id:
+        pa=c.execute("SELECT manager_user_id FROM project_assignments WHERE user_id=? AND project_id=? AND active=1",(requester_id,project_id)).fetchone()
+        if pa and pa["manager_user_id"]: return pa["manager_user_id"]
+    r=c.execute("SELECT reports_to_user_id FROM users WHERE id=?",(requester_id,)).fetchone()
+    if r and r["reports_to_user_id"]:
+        return r["reports_to_user_id"]
+    return c.execute("SELECT id FROM users WHERE role='SUPER_ADMIN' AND active=1 ORDER BY id LIMIT 1").fetchone()["id"]
 
 
 def parse_float(v):
@@ -385,8 +427,32 @@ def home():
     c.close()
     data=dashboard_data(); allowed_ids={p["id"] for p in projects}; data=[x for x in data if x["p"]["id"] in allowed_ids]
     totals={k:sum(x[k] for x in data) for k in ["income","expense","machine_expense","manpower_expense","store_expense","other_expense"]}
-    c=db(); org_units=c.execute("SELECT o.*,p.name parent_name,mu.full_name manager_name FROM org_units o LEFT JOIN org_units p ON p.id=o.parent_id LEFT JOIN users mu ON mu.id=o.manager_user_id WHERE o.active=1 ORDER BY o.sort_order,o.name").fetchall(); staff=c.execute("SELECT u.*,o.name org_name,m.full_name manager_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id LEFT JOIN users m ON m.id=u.reports_to_user_id WHERE u.active=1 ORDER BY o.sort_order,o.name,u.full_name").fetchall(); c.close()
-    return render_template("dashboard.html",data=data,totals=totals,org_units=org_units,staff=staff)
+    c=db()
+    if u["role"]=="SUPER_ADMIN":
+        org_units=c.execute("SELECT o.*,p.name parent_name,mu.full_name manager_name FROM org_units o LEFT JOIN org_units p ON p.id=o.parent_id LEFT JOIN users mu ON mu.id=o.manager_user_id WHERE o.active=1 ORDER BY o.sort_order,o.name").fetchall()
+        staff=c.execute("SELECT u.*,o.name org_name,m.full_name manager_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id LEFT JOIN users m ON m.id=u.reports_to_user_id WHERE u.active=1 ORDER BY o.sort_order,o.name,u.full_name").fetchall()
+    else:
+        org_units=c.execute("SELECT o.*,p.name parent_name,mu.full_name manager_name FROM org_units o LEFT JOIN org_units p ON p.id=o.parent_id LEFT JOIN users mu ON mu.id=o.manager_user_id WHERE o.active=1 AND o.id=? ORDER BY o.name",(u["org_unit_id"] or -1,)).fetchall()
+        staff=c.execute("SELECT u.*,o.name org_name,m.full_name manager_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id LEFT JOIN users m ON m.id=u.reports_to_user_id WHERE u.active=1 AND (u.id=? OR u.reports_to_user_id=?) ORDER BY u.full_name",(u["id"],u["id"])).fetchall()
+    req_total=c.execute("SELECT COUNT(*) n FROM resource_requests WHERE requested_by=? OR next_approver_user_id=?",(u["id"],u["id"])).fetchone()["n"]
+    req_pending=c.execute("SELECT COUNT(*) n FROM resource_requests WHERE status='SUBMITTED' AND next_approver_user_id=?",(u["id"],)).fetchone()["n"]
+    req_approved=c.execute("SELECT COUNT(*) n FROM resource_requests WHERE status='APPROVED' AND (requested_by=? OR approved_by=?)",(u["id"],u["id"])).fetchone()["n"]
+    req_rejected=c.execute("SELECT COUNT(*) n FROM resource_requests WHERE status='REJECTED' AND (requested_by=? OR rejected_by=?)",(u["id"],u["id"])).fetchone()["n"]
+    head_resp=c.execute("SELECT COUNT(*) n FROM responsibilities WHERE supervisor_user_id=? AND scope_type='HEAD_OFFICE' AND active=1",(u["id"],)).fetchone()["n"]
+    proj_resp=c.execute("SELECT COUNT(*) n FROM responsibilities WHERE supervisor_user_id=? AND scope_type='PROJECT' AND active=1",(u["id"],)).fetchone()["n"]
+    # Department-specific dashboard KPIs: personnel see metrics only for their assigned work area.
+    if u['role']=='SUPER_ADMIN':
+        module_metrics={'records':c.execute("SELECT COUNT(*) FROM resource_requests").fetchone()[0],'files':c.execute("SELECT COUNT(*) FROM workflow_files").fetchone()[0],'machines':c.execute("SELECT COUNT(*) FROM machines WHERE active=1").fetchone()[0],'materials':c.execute("SELECT COUNT(*) FROM materials WHERE active=1").fetchone()[0],'manpower':c.execute("SELECT COUNT(*) FROM manpower").fetchone()[0],'design':c.execute("SELECT COUNT(*) FROM design_items").fetchone()[0],'expenses':c.execute("SELECT COALESCE(SUM(amount),0) FROM finance_logs WHERE kind='Expense'").fetchone()[0]}
+    else:
+        d=u['department']; module_metrics={'records':req_total,'files':c.execute("SELECT COUNT(*) FROM workflow_files WHERE from_user_id=? OR to_user_id=? OR to_org_unit_id=?",(u['id'],u['id'],u['org_unit_id'] or -1)).fetchone()[0],'machines':0,'materials':0,'manpower':0,'design':0,'expenses':0}
+        if d=='Machinery': module_metrics['machines']=c.execute("SELECT COUNT(*) FROM machines WHERE active=1 AND project_id IN (SELECT project_id FROM user_projects WHERE user_id=?)",(u['id'],)).fetchone()[0]
+        elif d=='Store': module_metrics['materials']=c.execute("SELECT COUNT(*) FROM materials WHERE active=1 AND project_id IN (SELECT project_id FROM user_projects WHERE user_id=?)",(u['id'],)).fetchone()[0]
+        elif d=='HR': module_metrics['manpower']=c.execute("SELECT COUNT(*) FROM manpower WHERE project_id IN (SELECT project_id FROM user_projects WHERE user_id=?)",(u['id'],)).fetchone()[0]
+        elif d=='Design': module_metrics['design']=c.execute("SELECT COUNT(*) FROM design_items WHERE project_id IN (SELECT project_id FROM user_projects WHERE user_id=?)",(u['id'],)).fetchone()[0]
+        elif d=='Finance': module_metrics['expenses']=c.execute("SELECT COALESCE(SUM(amount),0) FROM finance_logs WHERE kind='Expense' AND project_id IN (SELECT project_id FROM user_projects WHERE user_id=?)",(u['id'],)).fetchone()[0]
+    c.close()
+    dashboard_workflow={"total":req_total,"pending":req_pending,"approved":req_approved,"rejected":req_rejected,"head_responsibilities":head_resp,"project_responsibilities":proj_resp}
+    return render_template("dashboard.html",data=data,totals=totals,org_units=org_units,staff=staff,dashboard_workflow=dashboard_workflow,module_metrics=module_metrics)
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -949,6 +1015,8 @@ def assign_project_role(uid):
         pid=int(request.form["project_id"]); position=request.form.get("project_position","").strip(); manager=request.form.get("project_manager_id") or None
         c.execute("INSERT INTO user_projects(user_id,project_id) VALUES(?,?) ON CONFLICT(user_id,project_id) DO NOTHING",(uid,pid))
         c.execute("INSERT INTO project_assignments(user_id,project_id,position,manager_user_id,active) VALUES(?,?,?,?,1) ON CONFLICT(user_id,project_id) DO UPDATE SET position=excluded.position,manager_user_id=excluded.manager_user_id,active=1",(uid,pid,position,manager))
+        c.execute("DELETE FROM responsibilities WHERE subordinate_user_id=? AND scope_type='PROJECT' AND project_id=?",(uid,pid))
+        if manager: c.execute("INSERT OR IGNORE INTO responsibilities(supervisor_user_id,subordinate_user_id,scope_type,project_id,source) VALUES(?,?,?,?,?)",(manager,uid,'PROJECT',pid,'Project Assignment'))
         c.commit(); flash("🏗️ Project assignment, position and reporting line saved.","success")
     except Exception as e: c.rollback(); flash("Project assignment failed: "+str(e),"error")
     c.close(); return redirect(url_for("users"))
@@ -956,7 +1024,7 @@ def assign_project_role(uid):
 @app.route("/admin/users/<int:uid>/project-assignment/<int:aid>/remove", methods=["POST"])
 @admin_required
 def remove_project_assignment(uid,aid):
-    c=db(); c.execute("UPDATE project_assignments SET active=0 WHERE id=? AND user_id=?",(aid,uid)); c.execute("DELETE FROM user_projects WHERE user_id=? AND project_id=(SELECT project_id FROM project_assignments WHERE id=?)",(uid,aid)); c.commit(); c.close(); flash("🏗️ Project assignment removed; staff record remains permanent.","success"); return redirect(url_for("users"))
+    c=db(); c.execute("UPDATE project_assignments SET active=0 WHERE id=? AND user_id=?",(aid,uid)); pa=c.execute("SELECT project_id FROM project_assignments WHERE id=?",(aid,)).fetchone(); c.execute("DELETE FROM user_projects WHERE user_id=? AND project_id=?",(uid,pa["project_id"] if pa else -1)); c.execute("UPDATE responsibilities SET active=0 WHERE subordinate_user_id=? AND scope_type='PROJECT' AND project_id=?",(uid,pa["project_id"] if pa else -1)); c.commit(); c.close(); flash("🏗️ Project assignment removed; staff record remains permanent.","success"); return redirect(url_for("users"))
 
 
 @app.route("/projects/<int:pid>/team")
@@ -967,15 +1035,179 @@ def project_team(pid):
     rows=c.execute("SELECT pa.*,u.full_name,u.staff_id,u.department,u.phone,u.email,u.org_unit_id,ou.name org_unit_name,m.full_name manager_name FROM project_assignments pa JOIN users u ON u.id=pa.user_id LEFT JOIN org_units ou ON ou.id=u.org_unit_id LEFT JOIN users m ON m.id=pa.manager_user_id WHERE pa.project_id=? AND pa.active=1 AND u.active=1 ORDER BY u.full_name",(pid,)).fetchall()
     c.close(); return render_template("project_team.html",pid=pid,p=p,rows=rows)
 
+def _request_scope_allowed(pid=None):
+    me=current_user()
+    if not me: return False
+    if pid is None: return True
+    return allowed_project(pid)
+
+
+def _request_rows_for_user(c, me, pid=None):
+    where=[]; args=[]
+    if me['role']=='SUPER_ADMIN':
+        if pid is not None:
+            where.append('rr.project_id=?'); args.append(pid)
+    else:
+        scope=['rr.requested_by=?','rr.next_approver_user_id=?']
+        scope_args=[me['id'],me['id']]
+        if me['org_unit_id']:
+            scope.append('rr.requester_org_unit_id=?'); scope_args.append(me['org_unit_id'])
+        where.append('('+' OR '.join(scope)+')'); args.extend(scope_args)
+        if pid is not None:
+            where.append('rr.project_id=?'); args.append(pid)
+    w=(' WHERE '+' AND '.join(where)) if where else ''
+    return c.execute("SELECT rr.*,p.name project_name,u.full_name requester,ou.name requester_unit,au.full_name approver FROM resource_requests rr LEFT JOIN projects p ON p.id=rr.project_id LEFT JOIN users u ON u.id=rr.requested_by LEFT JOIN org_units ou ON ou.id=rr.requester_org_unit_id LEFT JOIN users au ON au.id=rr.next_approver_user_id"+w+" ORDER BY rr.created_at DESC,rr.id DESC",tuple(args)).fetchall()
+
+
+def register_approved_request(c, row):
+    payload=json.loads(row['payload_json'] or '{}')
+    typ=row['request_type']; pid=row['project_id']; uid=row['approved_by'] or row['requested_by']
+    if typ in ('MATERIAL','PROCUREMENT'):
+        if not pid: return None,None
+        name=payload.get('material_name') or row['title']; unit=row['unit'] or payload.get('unit') or 'pcs'; category=payload.get('category','Other')
+        m=c.execute("SELECT id FROM materials WHERE project_id=? AND name=?",(pid,name)).fetchone()
+        if not m:
+            c.execute("INSERT INTO materials(project_id,category,name,unit,min_stock) VALUES(?,?,?,?,?)",(pid,category,name,unit,parse_float(payload.get('min_stock')))); mid=c.execute("SELECT last_insert_rowid() id").fetchone()['id']
+        else: mid=m['id']
+        c.execute("INSERT INTO store_logs(project_id,material_id,date,received,issued,unit_cost,physical_balance,reference,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?)",(pid,mid,payload.get('date',dt.date.today().isoformat()),row['quantity'],0,row['amount']/row['quantity'] if row['quantity'] else parse_float(payload.get('unit_cost')),None,row['request_no'] or f'REQ-{row["id"]}',row['description'],uid))
+        return 'store_logs',c.execute("SELECT last_insert_rowid() id").fetchone()['id']
+    if typ=='FUEL':
+        if not pid: return None,None
+        mid=payload.get('machine_id')
+        if not mid: raise ValueError('Fuel request requires a machine.')
+        c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id,source) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,mid,payload.get('date',dt.date.today().isoformat()),parse_float(payload.get('opening_gauge')),row['quantity'],parse_float(payload.get('closing_gauge')),parse_float(payload.get('fuel_price')),row['request_no'] or f'REQ-{row["id"]}',row['description'],uid,'Approved Request'))
+        return 'fuel_logs',c.execute("SELECT last_insert_rowid() id").fetchone()['id']
+    if typ=='MACHINERY':
+        if not pid: return None,None
+        c.execute("INSERT INTO machines(project_id,machine_type,code,plate_no,engine_no,ownership,hourly_rate,rate_unit,expected_fuel,fuel_price,active) VALUES(?,?,?,?,?,?,?,?,?,?,1)",(pid,payload.get('machine_type','Other'),payload.get('code',''),payload.get('plate_no',''),payload.get('engine_no',''),payload.get('ownership','Own'),parse_float(payload.get('rate')),payload.get('rate_unit','hr'),parse_float(payload.get('expected_fuel')),parse_float(payload.get('fuel_price'))))
+        return 'machines',c.execute("SELECT last_insert_rowid() id").fetchone()['id']
+    if typ=='MANPOWER':
+        if not pid: return None,None
+        c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,working_hours,hourly_rate,daily_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,payload.get('date',dt.date.today().isoformat()),payload.get('name',row['title']),payload.get('employment','Temporary'),payload.get('position','Other'),1,parse_float(payload.get('working_hours',8)),parse_float(payload.get('hourly_rate')),parse_float(payload.get('daily_rate')),row['description'],uid))
+        return 'manpower',c.execute("SELECT last_insert_rowid() id").fetchone()['id']
+    if typ=='EXPENSE':
+        if not pid: return None,None
+        c.execute("INSERT INTO finance_logs(project_id,date,category,kind,description,amount,reference,user_id) VALUES(?,?,?,?,?,?,?,?)",(pid,payload.get('date',dt.date.today().isoformat()),payload.get('category','Company Expense'),'Expense',row['description'],row['amount'],row['reference'] or row['request_no'],uid))
+        return 'finance_logs',c.execute("SELECT last_insert_rowid() id").fetchone()['id']
+    if typ=='DESIGN':
+        if not pid: return None,None
+        c.execute("INSERT INTO design_items(project_id,drawing_no,title,discipline,revision,status,submitted,comments,user_id) VALUES(?,?,?,?,?,?,?,?,?)",(pid,payload.get('drawing_no',''),row['title'],payload.get('discipline','General'),payload.get('revision',''),payload.get('status','Submitted'),payload.get('submitted',dt.date.today().isoformat()),row['description'],uid))
+        return 'design_items',c.execute("SELECT last_insert_rowid() id").fetchone()['id']
+    return 'resource_requests',row['id']
+
+
+@app.route('/requests', methods=['GET','POST'])
+@app.route('/projects/<int:pid>/requests', methods=['GET','POST'])
+@login_required
+def resource_requests(pid=None):
+    me=current_user()
+    if pid is not None and not allowed_project(pid): return redirect(url_for('dashboard'))
+    c=db()
+    projects=c.execute("SELECT p.* FROM projects p ORDER BY p.name").fetchall() if me['role']=='SUPER_ADMIN' else c.execute("SELECT p.* FROM projects p JOIN user_projects up ON up.project_id=p.id WHERE up.user_id=? ORDER BY p.name",(me['id'],)).fetchall()
+    machines=c.execute("SELECT * FROM machines WHERE active=1 AND (? IS NULL OR project_id=?) ORDER BY machine_type,code",(pid,pid)).fetchall()
+    units=c.execute("SELECT id,name,unit_type FROM org_units WHERE active=1 ORDER BY sort_order,name").fetchall()
+    users=c.execute("SELECT id,full_name,department,position,org_unit_id FROM users WHERE active=1 ORDER BY full_name").fetchall()
+    if request.method=='POST':
+        try:
+            typ=request.form.get('request_type','OTHER'); rpid=request.form.get('project_id') or pid or None
+            if typ not in REQUEST_TYPES: raise ValueError('Invalid request type.')
+            dept=me['department']
+            permitted={'MATERIAL':{'Store','Project'},'PROCUREMENT':{'Store','Project','Administration'},'FUEL':{'Machinery','Project'},'MACHINERY':{'Machinery','Project'},'MANPOWER':{'HR','Project'},'EXPENSE':{'Finance','Project','Consultant'},'DESIGN':{'Design','Project'},'OTHER':set(DEPARTMENTS)}
+            if me['role']!='SUPER_ADMIN' and dept not in permitted.get(typ,set()): raise ValueError(f'{typ} requests are not enabled for the {dept} department.')
+            if rpid and not allowed_project(int(rpid)): raise ValueError('You are not assigned to the selected project.')
+            title=request.form.get('title','').strip(); desc=request.form.get('description','').strip()
+            if not title: raise ValueError('Request title is required.')
+            attachment=request.files.get('attachment'); stored=None; original=None
+            if attachment and attachment.filename:
+                ext=secure_filename(attachment.filename).rsplit('.',1)[-1].lower() if '.' in attachment.filename else ''
+                if ext not in ALLOWED_FILE_EXT: raise ValueError('Unsupported attachment type.')
+                stored=f"request_{dt.datetime.now().strftime('%Y%m%d%H%M%S')}_{me['id']}_{secure_filename(attachment.filename)}"; attachment.save(os.path.join(WORKFLOW_FILES,stored)); original=attachment.filename
+            payload={k:v for k,v in request.form.items() if k not in {'request_type','project_id','title','description','quantity','unit','amount'}}
+            approver=request_approver(c,me['id'],int(rpid) if rpid else None)
+            count=c.execute("SELECT COUNT(*) FROM resource_requests").fetchone()[0]+1; no=f"REQ-{dt.date.today().year}-{count:05d}"
+            c.execute("INSERT INTO resource_requests(request_no,request_type,project_id,requested_by,requester_org_unit_id,next_approver_user_id,title,description,quantity,unit,amount,payload_json,attachment_file,attachment_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(no,typ,int(rpid) if rpid else None,me['id'],me['org_unit_id'],approver,title,desc,parse_float(request.form.get('quantity')),request.form.get('unit',''),parse_float(request.form.get('amount')),json.dumps(payload),stored,original))
+            c.commit(); flash(f'📨 {no} submitted. It is routed to the responsible approver in the hierarchy.','success')
+        except Exception as e: c.rollback(); flash('Request failed: '+str(e),'error')
+    rows=_request_rows_for_user(c,me,pid)
+    pending_count=c.execute("SELECT COUNT(*) n FROM resource_requests WHERE status='SUBMITTED' AND (requested_by=? OR next_approver_user_id=? OR ?='SUPER_ADMIN')",(me['id'],me['id'],me['role'])).fetchone()['n']
+    c.close(); return render_template('requests.html',pid=pid,projects=projects,machines=machines,rows=rows,pending_count=pending_count)
+
+
+@app.route('/requests/<int:rid>/<action>', methods=['POST'])
+@login_required
+def process_resource_request(rid,action):
+    me=current_user(); c=db(); row=c.execute("SELECT * FROM resource_requests WHERE id=?",(rid,)).fetchone()
+    if not row: c.close(); flash('Request not found.','error'); return redirect(url_for('resource_requests'))
+    if not user_can_approve_request(me,row): c.close(); flash('🚫 Only the assigned responsible person or Super Admin can approve this request.','error'); return redirect(url_for('resource_requests',pid=row['project_id']) if row['project_id'] else url_for('resource_requests'))
+    try:
+        if row['status']!='SUBMITTED': raise ValueError('This request has already been processed.')
+        if action=='approve':
+            c.execute("UPDATE resource_requests SET status='APPROVED',approved_by=?,approved_at=CURRENT_TIMESTAMP WHERE id=?",(me['id'],rid)); row=c.execute("SELECT * FROM resource_requests WHERE id=?",(rid,)).fetchone(); table,regid=register_approved_request(c,row); c.execute("UPDATE resource_requests SET registered_table=?,registered_id=? WHERE id=?",(table,regid,rid)); flash(f'✅ {row["request_no"]} approved and registered in {table}.','success')
+        elif action=='reject':
+            c.execute("UPDATE resource_requests SET status='REJECTED',rejected_by=?,rejected_at=CURRENT_TIMESTAMP,rejection_reason=? WHERE id=?",(me['id'],dt.datetime.now().isoformat(timespec='seconds'),request.form.get('reason','Rejected by approver'),rid)); flash(f'❌ {row["request_no"]} rejected.','success')
+        else: raise ValueError('Invalid request action.')
+        c.commit()
+    except Exception as e: c.rollback(); flash('Approval failed: '+str(e),'error')
+    c.close(); return redirect(url_for('resource_requests',pid=row['project_id']) if row['project_id'] else url_for('resource_requests'))
+
+
+@app.route('/requests/files/<path:filename>')
+@login_required
+def resource_request_file(filename):
+    c=db(); me=current_user(); row=c.execute("SELECT * FROM resource_requests WHERE attachment_file=? AND (requested_by=? OR next_approver_user_id=? OR approved_by=? OR ?='SUPER_ADMIN')",(filename,me['id'],me['id'],me['id'],me['role'])).fetchone(); c.close()
+    if not row: return ('File not found or access denied',404)
+    return send_from_directory(WORKFLOW_FILES,filename,as_attachment=True,download_name=row['attachment_name'] or filename)
+
+
+@app.route('/responsibilities')
+@login_required
+def responsibilities():
+    me=current_user(); c=db();
+    head=responsibility_users(me['id'],'HEAD_OFFICE')
+    project=responsibility_users(me['id'],'PROJECT')
+    my_projects=c.execute("SELECT pa.*,p.name project_name FROM project_assignments pa JOIN projects p ON p.id=pa.project_id WHERE pa.user_id=? AND pa.active=1 ORDER BY p.name",(me['id'],)).fetchall()
+    c.close(); return render_template('responsibilities.html',head=head,project=project,my_projects=my_projects)
+
+
+def visible_workflow_contacts(c, me):
+    if me['role']=='SUPER_ADMIN':
+        users=c.execute("SELECT id,full_name,department,position,org_unit_id FROM users WHERE active=1 ORDER BY full_name").fetchall()
+        units=c.execute("SELECT id,name,unit_type FROM org_units WHERE active=1 ORDER BY sort_order,name").fetchall()
+        return users,units
+    ids={me['id']}
+    if me['reports_to_user_id']: ids.add(me['reports_to_user_id'])
+    for r in c.execute("SELECT subordinate_user_id FROM responsibilities WHERE supervisor_user_id=? AND active=1",(me['id'],)).fetchall(): ids.add(r['subordinate_user_id'])
+    if me['org_unit_id']:
+        for r in c.execute("SELECT id FROM users WHERE active=1 AND org_unit_id=?",(me['org_unit_id'],)).fetchall(): ids.add(r['id'])
+    for r in c.execute("SELECT DISTINCT up2.user_id FROM user_projects up1 JOIN user_projects up2 ON up2.project_id=up1.project_id WHERE up1.user_id=? AND up2.user_id<>?",(me['id'],me['id'])).fetchall(): ids.add(r['user_id'])
+    if ids:
+        ph=','.join('?'*len(ids)); users=c.execute(f"SELECT id,full_name,department,position,org_unit_id FROM users WHERE active=1 AND id IN ({ph}) ORDER BY full_name",tuple(ids)).fetchall()
+    else: users=[]
+    unit_ids=set()
+    if me['org_unit_id']: unit_ids.add(me['org_unit_id'])
+    for r in users:
+        if r['org_unit_id']: unit_ids.add(r['org_unit_id'])
+    if me['org_unit_id']:
+        parent=c.execute("SELECT parent_id FROM org_units WHERE id=?",(me['org_unit_id'],)).fetchone()
+        if parent and parent['parent_id']: unit_ids.add(parent['parent_id'])
+    if unit_ids:
+        ph=','.join('?'*len(unit_ids)); units=c.execute(f"SELECT id,name,unit_type FROM org_units WHERE active=1 AND id IN ({ph}) ORDER BY sort_order,name",tuple(unit_ids)).fetchall()
+    else: units=[]
+    return users,units
+
+
 @app.route("/workflow", methods=["GET","POST"])
 @login_required
 def workflow():
     c=db(); me=current_user(); projects=c.execute("SELECT p.* FROM projects p JOIN user_projects up ON up.project_id=p.id WHERE up.user_id=? ORDER BY p.name",(me["id"],)).fetchall() if me["role"]!="SUPER_ADMIN" else c.execute("SELECT * FROM projects ORDER BY name").fetchall()
-    users=c.execute("SELECT id,full_name,department,position,org_unit_id FROM users WHERE active=1 ORDER BY full_name").fetchall()
-    units=c.execute("SELECT id,name,unit_type FROM org_units WHERE active=1 ORDER BY sort_order,name").fetchall()
+    users,units=visible_workflow_contacts(c,me)
     if request.method=="POST":
+        allowed_user_ids={r['id'] for r in users}; allowed_unit_ids={r['id'] for r in units}
         try:
             to_user=request.form.get("to_user_id") or None; to_unit=request.form.get("to_org_unit_id") or None; pid=request.form.get("project_id") or None
+            if to_user and int(to_user) not in allowed_user_ids: raise ValueError('Recipient is outside your permitted contact hierarchy.')
+            if to_unit and int(to_unit) not in allowed_unit_ids: raise ValueError('Recipient team is outside your permitted contact hierarchy.')
+            if not to_user and not to_unit: raise ValueError('Select a recipient person or department/team.')
             subject=request.form.get("subject","").strip(); message=request.form.get("message","").strip(); category=request.form.get("category","General Correspondence")
             f=request.files.get("file")
             if not subject: raise ValueError("Subject is required.")
@@ -1012,7 +1244,13 @@ def transfers(pid):
         action=request.form.get("action")
         try:
             to_pid=int(request.form["to_project_id"]); date=request.form.get("date",dt.date.today().isoformat()); ref=request.form.get("reference",""); notes=request.form.get("notes","")
-            if action=="material": c.execute("INSERT INTO material_transfers(from_project_id,to_project_id,material_id,date,quantity,unit_cost,reference,notes,sent_by) VALUES(?,?,?,?,?,?,?,?,?)",(pid,to_pid,request.form["material_id"],date,parse_float(request.form.get("quantity")),parse_float(request.form.get("unit_cost")),ref,notes,me["id"]))
+            if action=="material":
+                mid=int(request.form["material_id"]); qty=parse_float(request.form.get("quantity")); unit_cost=parse_float(request.form.get("unit_cost"))
+                if qty<=0: raise ValueError('Transfer quantity must be greater than zero.')
+                bal=c.execute("SELECT COALESCE(SUM(received-issued),0) FROM store_logs WHERE project_id=? AND material_id=?",(pid,mid)).fetchone()[0]
+                if qty>bal: raise ValueError(f'Insufficient source stock. Available balance: {bal:g}.')
+                c.execute("INSERT INTO material_transfers(from_project_id,to_project_id,material_id,date,quantity,unit_cost,reference,notes,sent_by) VALUES(?,?,?,?,?,?,?,?,?)",(pid,to_pid,mid,date,qty,unit_cost,ref,notes,me["id"]))
+                c.execute("INSERT INTO store_logs(project_id,material_id,date,received,issued,unit_cost,reference,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?)",(pid,mid,date,0,qty,unit_cost,ref or f'Transfer to project {to_pid}',notes or 'Inter-project material transfer sent',me['id']))
             elif action=="fuel": c.execute("INSERT INTO fuel_transfers(from_project_id,to_project_id,machine_id,date,litres,unit_cost,reference,notes,sent_by) VALUES(?,?,?,?,?,?,?,?,?)",(pid,to_pid,request.form.get("machine_id") or None,date,parse_float(request.form.get("litres")),parse_float(request.form.get("unit_cost")),ref,notes,me["id"]))
             elif action=="machine": c.execute("INSERT INTO machine_transfers(from_project_id,to_project_id,machine_id,date,notes,sent_by) VALUES(?,?,?,?,?,?)",(pid,to_pid,request.form["machine_id"],date,notes,me["id"]))
             c.commit(); flash("🔄 Transfer sent to the receiving project store/team for confirmation.","success")
@@ -1132,7 +1370,8 @@ def edit_org_unit(oid):
 def assign_head_office_staff(uid):
     c=db()
     try:
-        c.execute("UPDATE users SET org_unit_id=?,reports_to_user_id=? WHERE id=?",(request.form.get("org_unit_id") or None,request.form.get("reports_to_user_id") or None,uid)); c.commit(); flash("👤 Staff hierarchy updated.","success")
+        c.execute("UPDATE users SET org_unit_id=?,reports_to_user_id=? WHERE id=?",(request.form.get("org_unit_id") or None,request.form.get("reports_to_user_id") or None,uid)); c.execute("DELETE FROM responsibilities WHERE subordinate_user_id=? AND scope_type='HEAD_OFFICE'",(uid,)); mgr=request.form.get("reports_to_user_id") or None;
+        if mgr: c.execute("INSERT OR IGNORE INTO responsibilities(supervisor_user_id,subordinate_user_id,scope_type,project_id,source) VALUES(?,?,?,NULL,?)",(mgr,uid,'HEAD_OFFICE','Head Office Hierarchy')); c.commit(); flash("👤 Staff hierarchy updated.","success")
     except Exception as e: c.rollback(); flash("Could not update staff hierarchy: "+str(e),"error")
     c.close(); return redirect(url_for("head_office"))
 
@@ -1141,8 +1380,13 @@ def assign_head_office_staff(uid):
 def users():
     c=db(); users=c.execute("SELECT u.*,o.name org_unit_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id ORDER BY u.full_name").fetchall(); projects=c.execute("SELECT * FROM projects ORDER BY name").fetchall(); units=c.execute("SELECT * FROM org_units WHERE active=1 ORDER BY sort_order,name").fetchall()
     assign={u["id"]:[r["project_id"] for r in c.execute("SELECT project_id FROM user_projects WHERE user_id=?",(u["id"],)).fetchall()] for u in users}
-    project_assignments={u["id"]:[dict(r) for r in c.execute("SELECT pa.*,p.name project_name FROM project_assignments pa JOIN projects p ON p.id=pa.project_id WHERE pa.user_id=? AND pa.active=1 ORDER BY p.name",(u["id"],)).fetchall()] for u in users}; c.close()
-    return render_template("users.html",users=users,projects=projects,assign=assign,project_assignments=project_assignments,org_units=units)
+    project_assignments={u["id"]:[dict(r) for r in c.execute("SELECT pa.*,p.name project_name,m.full_name manager_name FROM project_assignments pa JOIN projects p ON p.id=pa.project_id LEFT JOIN users m ON m.id=pa.manager_user_id WHERE pa.user_id=? AND pa.active=1 ORDER BY p.name",(u["id"],)).fetchall()] for u in users}
+    responsibility_counts={u["id"]:{"head":c.execute("SELECT COUNT(*) n FROM responsibilities WHERE supervisor_user_id=? AND scope_type='HEAD_OFFICE' AND active=1",(u["id"],)).fetchone()["n"],"project":c.execute("SELECT COUNT(*) n FROM responsibilities WHERE supervisor_user_id=? AND scope_type='PROJECT' AND active=1",(u["id"],)).fetchone()["n"]} for u in users}
+    responsibility_people={}
+    for u in users:
+        responsibility_people[u["id"]]=c.execute("SELECT r.scope_type,u.full_name,p.name project_name FROM responsibilities r JOIN users u ON u.id=r.subordinate_user_id LEFT JOIN projects p ON p.id=r.project_id WHERE r.supervisor_user_id=? AND r.active=1 ORDER BY r.scope_type,p.name,u.full_name",(u["id"],)).fetchall()
+    c.close()
+    return render_template("users.html",users=users,projects=projects,assign=assign,project_assignments=project_assignments,org_units=units,responsibility_counts=responsibility_counts,responsibility_people=responsibility_people)
 
 @app.route("/admin/users/add",methods=["POST"])
 @admin_required
@@ -1270,6 +1514,8 @@ def assign_projects(uid):
     for pid in request.form.getlist("project_ids"):
         c.execute("INSERT OR IGNORE INTO user_projects(user_id,project_id) VALUES(?,?)",(uid,pid))
         c.execute("INSERT INTO project_assignments(user_id,project_id,position,active) VALUES(?,?,?,1) ON CONFLICT(user_id,project_id) DO UPDATE SET active=1",(uid,pid,(user['position'] if user else '') or ''))
+    c.execute("UPDATE responsibilities SET active=0 WHERE subordinate_user_id=? AND scope_type='PROJECT'",(uid,))
+    c.execute("INSERT OR IGNORE INTO responsibilities(supervisor_user_id,subordinate_user_id,scope_type,project_id,source) SELECT manager_user_id,user_id,'PROJECT',project_id,'Project Assignment' FROM project_assignments WHERE user_id=? AND active=1 AND manager_user_id IS NOT NULL",(uid,))
     c.commit();c.close();flash("🏗️ Project access and project assignment status updated.","success");return redirect(url_for("users"))
 
 @app.route("/admin/projects",methods=["GET","POST"])

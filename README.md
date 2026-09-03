@@ -1,53 +1,24 @@
-# BAGC Construction Management V18
+# BAGC Construction Management V26
 
-Multi-project construction management system for Birhanu Abebe General Contractor.
+Multi-project construction management system with strict department/project visibility and hierarchy-driven workflows.
 
-## V18 changes
-- Robust BOQ Excel import: scans sheets for the real header row and accepts common BOQ labels such as No./Item No., Description of Works, Unit, Quantity, Contract Quantity, Rate, Unit Rate and Unit Price.
-- BOQ import supports `.xlsx` and `.xlsm` and handles numeric values stored as text with commas/currency labels.
-- Imported BOQ items become the project master and are used by daily work and progress reporting.
-- Mandatory professional staff photo during user registration.
-- Permanent BAGC Staff ID, department, year and sequence.
-- Printable staff ID card with photo, name, department, position and status.
-- Existing staff records are never deleted. Disable only blocks access; the record and Staff ID remain.
-- Existing users can have their photo updated.
-- RFI workflow: Site Engineer → Office Engineer → Project Manager.
-- Daily data feeds weekly/monthly/semi-annual/annual reporting with custom From/End dates and saved report history.
-- Machinery assignment lifecycle requires signed start/end hour records and a new assignment after an assignment is ended.
+## V26 additions
+- Department/team/project visibility filtering.
+- Head Office and Project responsibility register.
+- Super Admin assignment of department/team, position, project position and reporting lines.
+- Controlled recipient filtering for company workflow correspondence.
+- Resource Requests for Material, Fuel, Machinery, Manpower, Expense, Design, Procurement and Other.
+- Hierarchy-based approval: Project requests route to the project reporting chain; Head Office requests route to Head Office reporting chain.
+- Approved requests automatically register into Store, Fuel, Machinery, Manpower, Finance or Design where applicable.
+- Request attachments and permanent registration references.
+- Department-filtered dashboard KPIs and request status chart.
+- Inter-project material transfer deducts source stock and receiving confirmation registers the material at the destination.
+- Existing consultant/company-paid expense, workflow files, fuel, machinery and project reporting features retained.
+
+## Run locally
+`pip install -r requirements.txt`
+`python app.py`
 
 ## Render
-Build: `pip install -r requirements.txt`
-Start: `gunicorn app:app`
-
-Environment variables:
-- `ADMIN_USERNAME`
-- `ADMIN_PASSWORD`
-- `SECRET_KEY`
-
-## Deployment note
-The application currently uses SQLite and runtime uploads. For production permanence on Render, use persistent storage or preferably PostgreSQL/object storage so database records and staff photos survive service replacement/redeployments.
-
-## V20 persistence requirement
-The application never deletes users, projects, BOQ, daily reports or saved reports during startup. SQLite is stored in `BAGC_DATA_DIR` when configured; if `/data` is writable it is preferred automatically. On Render, the normal ephemeral filesystem can still be reset during redeploy/restart. For permanent production data, configure a Render persistent disk mounted at `/data` (paid service) or migrate the SQLite database to PostgreSQL. Do not rely on the default ephemeral filesystem for company records.
-
-V20 also fixes the machinery/fuel save errors, adds linked daily work packages, crew evaluation/capacity, BOQ variation alerts, staff ID bilingual front/back and unique Code 128 barcodes, and automatic machine assignment completion based on signed total hours.
-
-
-## V22 Daily Report and Machinery workflow
-- Daily Report is a single-save workflow: add multiple BOQ work packages, then select only the machinery, manpower, crews, store, fuel and finance records used for each BOQ item.
-- Each selected resource has an allocation field so one resource record can be split across several BOQ work items on the same day. Store allocation cannot exceed the issued quantity; machinery cannot exceed logged hours; manpower cannot exceed attendance/hours; fuel and finance cannot exceed their source records.
-- Daily Report includes a Unit selector populated from common construction units plus units found in the project's BOQ.
-- Machinery has a signed assignment start date, start meter/hour and total signed hours. The assignment automatically ends when cumulative work + idle + down hours reach the signed total. A new signed assignment is required for reuse.
-- Machinery assignment endpoints are included and the machine add/log workflow is committed before the page is rendered.
-- SQLite WAL mode is configured during initialization rather than on every request, reducing lock contention. Login no longer reruns database migrations on every authentication request.
-
-
-## V25 workflow additions
-- Super Admin can assign staff to Head Office departments/teams and set Head Office reporting lines.
-- Super Admin can assign staff to projects with a project-specific position and project manager/reporting line.
-- Project Team page shows assigned project personnel and reporting.
-- Company Workflow supports sender/receiver file routing for all departments, including material test results and DOC/XLS/XLSX/PDF/image files.
-- Inter-project transfer register supports materials, fuel and machinery with sending and receiving confirmation. Material receipts are posted into the receiving project's store. Machinery is moved to the receiving project after acceptance.
-- Consultant/Staff company-paid expense claims support beneficiary, ETB amount, receipt upload, Finance/Super Admin approval and finance posting.
-- CONSULTANT accounts can log in and access their assigned project dashboard/workflow.
-- Workflow files and receipts are stored under the configured BAGC_DATA_DIR uploads folder.
+Start command: `gunicorn app:app`
+Configure `BAGC_DATA_DIR` to a persistent disk or use an external database for permanent production data.
