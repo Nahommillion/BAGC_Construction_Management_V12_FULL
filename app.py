@@ -78,7 +78,7 @@ MATERIAL_CATALOG=[
 "Safety Helmet","Safety Vest","Safety Boot","Safety Glove","Safety Goggles","Ear Plug","Dust Mask","Harness","Reflective Tape","Barricade","Warning Sign","Cones","Fire Extinguisher","First Aid Kit",
 "Other"]
 CREW_GROUPS=["Project Management","Key Staff","Earthwork Crew","Structure Crew","Road/Culvert Crew","Equipment / Machinery","Store","DL","Data Collector","Survey Team","Supporting Staff","Office Staff","Skilled Labour","Semi-Skilled Labour","Non-Skilled Labour","Security / General Support"]
-POSITION_CATALOG=["Project Manager","Deputy Project Manager","Construction Manager","Site Engineer","Office Engineer","Quantity Surveyor","Planning Engineer","Design Engineer","QA/QC Engineer","Materials Engineer","Surveyor","Survey Assistant","HSE Officer","Foreman","Earthwork Foreman","Structure Foreman","Road Foreman","DL","Data Collector","Store Keeper","Store Assistant","Mechanic","Electrician","Plumber","Mason","Carpenter","Steel Fixer","Welder","Painter","Aluminium Worker","Equipment Operator","Driver","Labourer","Security Guard","Cleaner","Office Assistant","Document Controller","Accountant","Procurement Officer","Other"]
+POSITION_CATALOG=["Project Manager","Deputy Project Manager","Construction Manager","Site Engineer","Office Engineer","Quantity Surveyor","Planning Engineer","Design Engineer","QA/QC Engineer","Materials Engineer","Surveyor","Survey Assistant","HSE Officer","Foreman","Earthwork Foreman","Structure Foreman","Road Foreman","DL","Data Collector","Store Keeper","Store Assistant","Mechanic","Electrician","Plumber","Mason","Carpenter","Steel Fixer","Welder","Painter","Aluminium Worker","Equipment Operator","Driver","Labourer","Security Guard","Cleaner","Office Assistant","Document Controller","Accountant","Procurement Officer","Other","Office Head","Senior Store Officer","Senior Equipment Officer","Senior Fuel Officer","HR Head","Finance Head","Design Head"]
 DESIGN_STATUSES=["Draft","Submitted","Under Review","Approved","Approved with Comments","Revise & Resubmit","Rejected","As-Built","Handed Over"]
 
 # Strict module visibility: ordinary personnel only see the module owned by their department.
@@ -96,7 +96,7 @@ REQUEST_CATEGORIES={
 
 @app.context_processor
 def template_helpers():
-    return {"dt": dt, "head_office_units": HEAD_OFFICE_STRUCTURE}
+    return {"dt": dt, "head_office_units": HEAD_OFFICE_STRUCTURE, "project_admin": project_admin}
 
 
 def db():
@@ -167,7 +167,12 @@ def init_db():
     CREATE TABLE IF NOT EXISTS project_assignments(id INTEGER PRIMARY KEY,user_id INTEGER,project_id INTEGER,position TEXT,manager_user_id INTEGER,active INTEGER DEFAULT 1,UNIQUE(user_id,project_id));
     CREATE TABLE IF NOT EXISTS responsibilities(id INTEGER PRIMARY KEY,supervisor_user_id INTEGER,subordinate_user_id INTEGER,scope_type TEXT NOT NULL,project_id INTEGER,active INTEGER DEFAULT 1,source TEXT DEFAULT 'Manual',created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(supervisor_user_id,subordinate_user_id,scope_type,project_id));
     CREATE TABLE IF NOT EXISTS resource_requests(id INTEGER PRIMARY KEY,request_no TEXT UNIQUE,request_type TEXT,project_id INTEGER,requested_by INTEGER,requester_org_unit_id INTEGER,next_approver_user_id INTEGER,title TEXT,description TEXT,quantity REAL DEFAULT 0,unit TEXT,amount REAL DEFAULT 0,payload_json TEXT DEFAULT '{}',attachment_file TEXT,attachment_name TEXT,status TEXT DEFAULT 'SUBMITTED',approved_by INTEGER,approved_at TEXT,rejected_by INTEGER,rejected_at TEXT,rejection_reason TEXT,registered_table TEXT,registered_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS request_steps(id INTEGER PRIMARY KEY,request_id INTEGER,step_order INTEGER,stage TEXT,assigned_user_id INTEGER,to_org_unit_id INTEGER,department TEXT,status TEXT DEFAULT 'PENDING',action TEXT,comments TEXT,acted_at TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(request_id,step_order));
+    CREATE TABLE IF NOT EXISTS project_responsibilities(id INTEGER PRIMARY KEY,project_id INTEGER,user_id INTEGER,responsibility_area TEXT DEFAULT 'General Project',source TEXT DEFAULT 'Manual',assigned_by INTEGER,active INTEGER DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(project_id,user_id,responsibility_area));
     ''')
+    existing_rr=[r['name'] for r in c.execute("PRAGMA table_info(resource_requests)").fetchall()]
+    for col,typ in [('current_stage',"TEXT DEFAULT 'PROJECT'"),('origin_scope',"TEXT DEFAULT 'PROJECT'"),('head_office_sent_at','TEXT'),('finalized_at','TEXT')]:
+        if col not in existing_rr: c.execute(f"ALTER TABLE resource_requests ADD COLUMN {col} {typ}")
     # Safe migrations for databases created by earlier BAGC versions.
     existing_bq=[r['name'] for r in c.execute("PRAGMA table_info(boq)").fetchall()]
     if 'series' not in existing_bq: c.execute("ALTER TABLE boq ADD COLUMN series TEXT DEFAULT ''")
@@ -283,6 +288,14 @@ def allowed_project(pid):
     c=db();ok=c.execute("SELECT 1 FROM user_projects WHERE user_id=? AND project_id=?",(u["id"],pid)).fetchone();c.close();return bool(ok)
 
 
+def project_admin(pid):
+    u=current_user()
+    if not u: return False
+    if u["role"]=="SUPER_ADMIN": return True
+    c=db(); row=c.execute("SELECT 1 FROM project_assignments WHERE user_id=? AND project_id=? AND active=1 AND lower(position) LIKE '%project manager%'",(u["id"],pid)).fetchone(); c.close()
+    return bool(row)
+
+
 def can_module(module):
     u=current_user()
     if not u:return False
@@ -301,6 +314,25 @@ def responsibility_users(user_id, scope_type=None, project_id=None):
 def user_can_approve_request(me, row):
     if me["role"]=="SUPER_ADMIN": return True
     return row["next_approver_user_id"]==me["id"]
+
+def find_project_person(c,pid,term):
+    rows=c.execute("SELECT pa.user_id,pa.position FROM project_assignments pa JOIN users u ON u.id=pa.user_id WHERE pa.project_id=? AND pa.active=1 AND u.active=1 ORDER BY pa.id",(pid,)).fetchall()
+    for r in rows:
+        if term.lower() in (r['position'] or '').lower(): return r['user_id']
+    return None
+
+
+def project_request_steps(c,pid,requester_id):
+    out=[]; used=set()
+    for stage,term in [('OFFICE_ENGINEER','Office Engineer'),('OFFICE_HEAD','Office Head'),('PROJECT_MANAGER','Project Manager')]:
+        uid=find_project_person(c,pid,term)
+        if uid and uid!=requester_id and uid not in used: out.append((stage,uid)); used.add(uid)
+    return out
+
+
+def current_request_step(c,rid):
+    return c.execute("SELECT * FROM request_steps WHERE request_id=? AND status='PENDING' ORDER BY step_order LIMIT 1",(rid,)).fetchone()
+
 
 def request_approver(c, requester_id, project_id=None):
     # Project requests stay under the project chain; Head Office requests stay under the Head Office chain.
@@ -542,8 +574,8 @@ def application_error(error):
 @login_required
 def daily(pid):
     u=current_user()
-    if not allowed_project(pid) or (u["role"]!="SUPER_ADMIN" and u["position"]!="Office Engineer"):
-        flash("🚫 Only the assigned Office Engineer can prepare the Daily Report. Super Admin has override access.","error")
+    if not allowed_project(pid) or (u["role"]!="SUPER_ADMIN" and u["position"]!="Office Engineer" and not project_admin(pid)):
+        flash("🚫 Daily Report is controlled by the Office Engineer; Project Manager has project-admin access. Super Admin has override access.","error")
         return redirect(url_for("project",pid=pid))
     c=db(); default_date=request.args.get("date",dt.date.today().isoformat())
     try:
@@ -706,7 +738,7 @@ def daily(pid):
 @app.route("/projects/<int:pid>/fuel",methods=["GET","POST"])
 @login_required
 def fuel(pid):
-    if not allowed_project(pid) or not can_module("Machinery"): flash("🚫 Machinery/Fuel access is not assigned.","error"); return redirect(url_for("project",pid=pid))
+    if not allowed_project(pid) or (not can_module("Machinery") and not project_admin(pid)): flash("🚫 Machinery/Fuel access is not assigned.","error"); return redirect(url_for("project",pid=pid))
     c=db()
     try:
         if request.method=="POST":
@@ -757,7 +789,7 @@ def print_report(pid):
 @app.route("/projects/<int:pid>/machinery/assign", methods=["POST"])
 @login_required
 def assign_machine(pid):
-    if not allowed_project(pid) or not can_module("Machinery"):
+    if not allowed_project(pid) or (not can_module("Machinery") and not project_admin(pid)):
         flash("🚫 Machinery access is not assigned.", "error"); return redirect(url_for("project", pid=pid))
     c=db()
     try:
@@ -780,7 +812,7 @@ def assign_machine(pid):
 @app.route("/projects/<int:pid>/machinery/end-assignment", methods=["POST"])
 @login_required
 def end_machine_assignment(pid):
-    if not allowed_project(pid) or not can_module("Machinery"):
+    if not allowed_project(pid) or (not can_module("Machinery") and not project_admin(pid)):
         flash("🚫 Machinery access is not assigned.", "error"); return redirect(url_for("project", pid=pid))
     c=db()
     try:
@@ -798,7 +830,7 @@ def end_machine_assignment(pid):
 @app.route("/projects/<int:pid>/machinery",methods=["GET","POST"])
 @login_required
 def machinery(pid):
-    if not allowed_project(pid) or not can_module("Machinery"):flash("🚫 Machinery access is not assigned.","error");return redirect(url_for("project",pid=pid))
+    if not allowed_project(pid) or (not can_module("Machinery") and not project_admin(pid)):flash("🚫 Machinery access is not assigned.","error");return redirect(url_for("project",pid=pid))
     c=db()
     if request.method=="POST":
         action=request.form.get("action")
@@ -836,7 +868,7 @@ def machinery(pid):
 @app.route("/projects/<int:pid>/manpower",methods=["GET","POST"])
 @login_required
 def manpower(pid):
-    if not allowed_project(pid) or not can_module("HR"): flash("🚫 HR/manpower access is not assigned.","error"); return redirect(url_for("project",pid=pid))
+    if not allowed_project(pid) or (not can_module("HR") and not project_admin(pid)): flash("🚫 HR/manpower access is not assigned.","error"); return redirect(url_for("project",pid=pid))
     c=db()
     try:
         if request.method=="POST":
@@ -848,7 +880,7 @@ def manpower(pid):
 @app.route("/projects/<int:pid>/store",methods=["GET","POST"])
 @login_required
 def store(pid):
-    if not allowed_project(pid) or not can_module("Store"):flash("🚫 Store access is not assigned.","error");return redirect(url_for("project",pid=pid))
+    if not allowed_project(pid) or (not can_module("Store") and not project_admin(pid)):flash("🚫 Store access is not assigned.","error");return redirect(url_for("project",pid=pid))
     c=db()
     if request.method=="POST":
         if request.form.get("action")=="add":c.execute("INSERT INTO materials(project_id,category,name,unit,min_stock) VALUES(?,?,?,?,?)",(pid,request.form["category"],request.form["name"],request.form["unit"],parse_float(request.form["min_stock"])))
@@ -862,7 +894,7 @@ def store(pid):
 @app.route("/projects/<int:pid>/crew",methods=["GET","POST"])
 @login_required
 def crew(pid):
-    if not allowed_project(pid) or not can_module("HR"): flash("🚫 Crew access is not assigned.","error"); return redirect(url_for("project",pid=pid))
+    if not allowed_project(pid) or (not can_module("HR") and not project_admin(pid)): flash("🚫 Crew access is not assigned.","error"); return redirect(url_for("project",pid=pid))
     c=db()
     try:
         if request.method=="POST":
@@ -889,8 +921,9 @@ def crew(pid):
     return render_template("crew.html",pid=pid,rows=rows,crew_groups=groups,position_catalog=positions,capacities=capacities)
 
 @app.route("/projects/<int:pid>/report-settings",methods=["GET","POST"])
-@admin_required
+@login_required
 def report_settings(pid):
+    if not project_admin(pid): return redirect(url_for("project",pid=pid))
     c=db(); s=c.execute("SELECT * FROM report_settings WHERE project_id=?",(pid,)).fetchone()
     if request.method=="POST":
         vals=(pid,request.form.get("contractor_role","Main Contractor"),request.form.get("phone",""),request.form.get("email",""),request.form.get("website",""),request.form.get("fax",""),request.form.get("address",""),request.form.get("logo_text","BAGC"))
@@ -900,7 +933,7 @@ def report_settings(pid):
 @app.route("/projects/<int:pid>/design",methods=["GET","POST"])
 @login_required
 def design(pid):
-    if not allowed_project(pid) or not can_module("Design"):flash("🚫 Design access is not assigned.","error");return redirect(url_for("project",pid=pid))
+    if not allowed_project(pid) or (not can_module("Design") and not project_admin(pid)):flash("🚫 Design access is not assigned.","error");return redirect(url_for("project",pid=pid))
     c=db()
     if request.method=="POST":
         c.execute("INSERT INTO design_items(project_id,drawing_no,title,discipline,revision,status,submitted,approved,comments,user_id) VALUES(?,?,?,?,?,?,?,?,?,?)",(pid,request.form["drawing_no"],request.form["title"],request.form["discipline"],request.form["revision"],request.form["status"],request.form.get("submitted",""),request.form.get("approved",""),request.form.get("comments",""),current_user()["id"]));c.commit();flash("🎨 Design record saved.","success")
@@ -909,7 +942,7 @@ def design(pid):
 @app.route("/projects/<int:pid>/finance",methods=["GET","POST"])
 @login_required
 def finance(pid):
-    if not allowed_project(pid) or not can_module("Finance"):flash("🚫 Finance access is not assigned.","error");return redirect(url_for("project",pid=pid))
+    if not allowed_project(pid) or (not can_module("Finance") and not project_admin(pid)):flash("🚫 Finance access is not assigned.","error");return redirect(url_for("project",pid=pid))
     c=db()
     if request.method=="POST":c.execute("INSERT INTO finance_logs(project_id,date,category,kind,description,amount,reference,user_id) VALUES(?,?,?,?,?,?,?,?)",(pid,request.form["date"],request.form["category"],request.form["kind"],request.form["description"],parse_float(request.form["amount"]),request.form.get("reference",""),current_user()["id"]));c.commit();flash("💰 Finance record saved.","success")
     rows=c.execute("SELECT * FROM finance_logs WHERE project_id=? ORDER BY date DESC,id DESC LIMIT 100",(pid,)).fetchall();c.close();return render_template("finance.html",pid=pid,rows=rows)
@@ -1033,7 +1066,9 @@ def project_team(pid):
     if not allowed_project(pid): return redirect(url_for("dashboard"))
     c=db(); p=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone()
     rows=c.execute("SELECT pa.*,u.full_name,u.staff_id,u.department,u.phone,u.email,u.org_unit_id,ou.name org_unit_name,m.full_name manager_name FROM project_assignments pa JOIN users u ON u.id=pa.user_id LEFT JOIN org_units ou ON ou.id=u.org_unit_id LEFT JOIN users m ON m.id=pa.manager_user_id WHERE pa.project_id=? AND pa.active=1 AND u.active=1 ORDER BY u.full_name",(pid,)).fetchall()
-    c.close(); return render_template("project_team.html",pid=pid,p=p,rows=rows)
+    all_users=c.execute("SELECT u.id,u.full_name,u.department,u.position,o.name org_unit_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id WHERE u.active=1 ORDER BY u.full_name").fetchall()
+    responsible_ids={r['user_id'] for r in c.execute("SELECT user_id FROM project_responsibilities WHERE project_id=? AND responsibility_area='General Project' AND active=1",(pid,)).fetchall()}
+    c.close(); return render_template("project_team.html",pid=pid,p=p,rows=rows,all_users=all_users,responsible_ids=responsible_ids)
 
 def _request_scope_allowed(pid=None):
     me=current_user()
@@ -1048,13 +1083,16 @@ def _request_rows_for_user(c, me, pid=None):
         if pid is not None:
             where.append('rr.project_id=?'); args.append(pid)
     else:
-        scope=['rr.requested_by=?','rr.next_approver_user_id=?']
-        scope_args=[me['id'],me['id']]
-        if me['org_unit_id']:
-            scope.append('rr.requester_org_unit_id=?'); scope_args.append(me['org_unit_id'])
-        where.append('('+' OR '.join(scope)+')'); args.extend(scope_args)
-        if pid is not None:
+        if pid is not None and project_admin(pid):
             where.append('rr.project_id=?'); args.append(pid)
+        else:
+            scope=['rr.requested_by=?','rr.next_approver_user_id=?']
+            scope_args=[me['id'],me['id']]
+            if me['org_unit_id']:
+                scope.append('rr.requester_org_unit_id=?'); scope_args.append(me['org_unit_id'])
+            where.append('('+' OR '.join(scope)+')'); args.extend(scope_args)
+            if pid is not None:
+                where.append('rr.project_id=?'); args.append(pid)
     w=(' WHERE '+' AND '.join(where)) if where else ''
     return c.execute("SELECT rr.*,p.name project_name,u.full_name requester,ou.name requester_unit,au.full_name approver FROM resource_requests rr LEFT JOIN projects p ON p.id=rr.project_id LEFT JOIN users u ON u.id=rr.requested_by LEFT JOIN org_units ou ON ou.id=rr.requester_org_unit_id LEFT JOIN users au ON au.id=rr.next_approver_user_id"+w+" ORDER BY rr.created_at DESC,rr.id DESC",tuple(args)).fetchall()
 
@@ -1106,7 +1144,7 @@ def resource_requests(pid=None):
     projects=c.execute("SELECT p.* FROM projects p ORDER BY p.name").fetchall() if me['role']=='SUPER_ADMIN' else c.execute("SELECT p.* FROM projects p JOIN user_projects up ON up.project_id=p.id WHERE up.user_id=? ORDER BY p.name",(me['id'],)).fetchall()
     machines=c.execute("SELECT * FROM machines WHERE active=1 AND (? IS NULL OR project_id=?) ORDER BY machine_type,code",(pid,pid)).fetchall()
     units=c.execute("SELECT id,name,unit_type FROM org_units WHERE active=1 ORDER BY sort_order,name").fetchall()
-    users=c.execute("SELECT id,full_name,department,position,org_unit_id FROM users WHERE active=1 ORDER BY full_name").fetchall()
+    users=c.execute("SELECT u.id,u.full_name,u.department,u.position,u.org_unit_id,o.name org_unit_name,o.unit_type,o.parent_id FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id WHERE u.active=1 ORDER BY u.full_name").fetchall()
     if request.method=='POST':
         try:
             typ=request.form.get('request_type','OTHER'); rpid=request.form.get('project_id') or pid or None
@@ -1123,14 +1161,18 @@ def resource_requests(pid=None):
                 if ext not in ALLOWED_FILE_EXT: raise ValueError('Unsupported attachment type.')
                 stored=f"request_{dt.datetime.now().strftime('%Y%m%d%H%M%S')}_{me['id']}_{secure_filename(attachment.filename)}"; attachment.save(os.path.join(WORKFLOW_FILES,stored)); original=attachment.filename
             payload={k:v for k,v in request.form.items() if k not in {'request_type','project_id','title','description','quantity','unit','amount'}}
-            approver=request_approver(c,me['id'],int(rpid) if rpid else None)
+            steps=project_request_steps(c,int(rpid),me['id']) if rpid else []
+            approver=steps[0][1] if steps else request_approver(c,me['id'],int(rpid) if rpid else None)
             count=c.execute("SELECT COUNT(*) FROM resource_requests").fetchone()[0]+1; no=f"REQ-{dt.date.today().year}-{count:05d}"
-            c.execute("INSERT INTO resource_requests(request_no,request_type,project_id,requested_by,requester_org_unit_id,next_approver_user_id,title,description,quantity,unit,amount,payload_json,attachment_file,attachment_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(no,typ,int(rpid) if rpid else None,me['id'],me['org_unit_id'],approver,title,desc,parse_float(request.form.get('quantity')),request.form.get('unit',''),parse_float(request.form.get('amount')),json.dumps(payload),stored,original))
-            c.commit(); flash(f'📨 {no} submitted. It is routed to the responsible approver in the hierarchy.','success')
+            c.execute("INSERT INTO resource_requests(request_no,request_type,project_id,requested_by,requester_org_unit_id,next_approver_user_id,title,description,quantity,unit,amount,payload_json,attachment_file,attachment_name,current_stage,origin_scope) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(no,typ,int(rpid) if rpid else None,me['id'],me['org_unit_id'],approver,title,desc,parse_float(request.form.get('quantity')),request.form.get('unit',''),parse_float(request.form.get('amount')),json.dumps(payload),stored,original,'PROJECT' if rpid else 'HEAD_OFFICE','PROJECT' if rpid else 'HEAD_OFFICE'))
+            rid=c.execute("SELECT last_insert_rowid() id").fetchone()['id']
+            for i,(stage,uid) in enumerate(steps,1): c.execute("INSERT INTO request_steps(request_id,step_order,stage,assigned_user_id,status) VALUES(?,?,?,?,?)",(rid,i,stage,uid,'PENDING'))
+            if not steps and approver: c.execute("INSERT INTO request_steps(request_id,step_order,stage,assigned_user_id,status) VALUES(?,?,?,?,?)",(rid,1,'HEAD_OFFICE_MANAGER',approver,'PENDING'))
+            c.commit(); flash(f'📨 {no} submitted. It entered the approval chain.','success')
         except Exception as e: c.rollback(); flash('Request failed: '+str(e),'error')
     rows=_request_rows_for_user(c,me,pid)
     pending_count=c.execute("SELECT COUNT(*) n FROM resource_requests WHERE status='SUBMITTED' AND (requested_by=? OR next_approver_user_id=? OR ?='SUPER_ADMIN')",(me['id'],me['id'],me['role'])).fetchone()['n']
-    c.close(); return render_template('requests.html',pid=pid,projects=projects,machines=machines,rows=rows,pending_count=pending_count)
+    c.close(); return render_template('requests.html',pid=pid,projects=projects,machines=machines,rows=rows,pending_count=pending_count,users=users,units=units,departments=DEPARTMENTS)
 
 
 @app.route('/requests/<int:rid>/<action>', methods=['POST'])
@@ -1138,14 +1180,23 @@ def resource_requests(pid=None):
 def process_resource_request(rid,action):
     me=current_user(); c=db(); row=c.execute("SELECT * FROM resource_requests WHERE id=?",(rid,)).fetchone()
     if not row: c.close(); flash('Request not found.','error'); return redirect(url_for('resource_requests'))
-    if not user_can_approve_request(me,row): c.close(); flash('🚫 Only the assigned responsible person or Super Admin can approve this request.','error'); return redirect(url_for('resource_requests',pid=row['project_id']) if row['project_id'] else url_for('resource_requests'))
     try:
-        if row['status']!='SUBMITTED': raise ValueError('This request has already been processed.')
-        if action=='approve':
-            c.execute("UPDATE resource_requests SET status='APPROVED',approved_by=?,approved_at=CURRENT_TIMESTAMP WHERE id=?",(me['id'],rid)); row=c.execute("SELECT * FROM resource_requests WHERE id=?",(rid,)).fetchone(); table,regid=register_approved_request(c,row); c.execute("UPDATE resource_requests SET registered_table=?,registered_id=? WHERE id=?",(table,regid,rid)); flash(f'✅ {row["request_no"]} approved and registered in {table}.','success')
-        elif action=='reject':
-            c.execute("UPDATE resource_requests SET status='REJECTED',rejected_by=?,rejected_at=CURRENT_TIMESTAMP,rejection_reason=? WHERE id=?",(me['id'],dt.datetime.now().isoformat(timespec='seconds'),request.form.get('reason','Rejected by approver'),rid)); flash(f'❌ {row["request_no"]} rejected.','success')
-        else: raise ValueError('Invalid request action.')
+        if action not in ('approve','reject'): raise ValueError('Invalid request action.')
+        if not user_can_approve_request(me,row): raise ValueError('Only the currently assigned responsible person can approve or reject this request.')
+        step=current_request_step(c,rid)
+        if action=='reject':
+            if step: c.execute("UPDATE request_steps SET status='REJECTED',action='REJECTED',comments=?,acted_at=CURRENT_TIMESTAMP WHERE id=?",(request.form.get('reason','Rejected by approver'),step['id']))
+            c.execute("UPDATE resource_requests SET status='REJECTED',rejected_by=?,rejected_at=CURRENT_TIMESTAMP,rejection_reason=?,next_approver_user_id=NULL WHERE id=?",(me['id'],dt.datetime.now().isoformat(timespec='seconds'),request.form.get('reason','Rejected by approver'),rid))
+            flash(f'❌ {row["request_no"]} rejected.','success')
+        else:
+            if step: c.execute("UPDATE request_steps SET status='APPROVED',action='APPROVED',comments=?,acted_at=CURRENT_TIMESTAMP WHERE id=?",(request.form.get('comments',''),step['id']))
+            nxt=current_request_step(c,rid)
+            if nxt:
+                c.execute("UPDATE resource_requests SET next_approver_user_id=?,current_stage=?,status='SUBMITTED' WHERE id=?",(nxt['assigned_user_id'],nxt['stage'],rid)); flash(f'✅ {row["request_no"]} approved at this stage and sent to the next project approver.','success')
+            elif row['project_id'] and me['role']!='SUPER_ADMIN' and (row['current_stage'] or '')!='HEAD_OFFICE_REVIEW':
+                c.execute("UPDATE resource_requests SET next_approver_user_id=NULL,current_stage='AWAITING_HEAD_OFFICE',status='AWAITING_HEAD_OFFICE' WHERE id=?",(rid,)); flash(f'✅ {row["request_no"]} passed the project approval chain. Project Manager must now send it to Head Office.','success')
+            else:
+                c.execute("UPDATE resource_requests SET status='APPROVED',approved_by=?,approved_at=CURRENT_TIMESTAMP,finalized_at=CURRENT_TIMESTAMP,next_approver_user_id=NULL WHERE id=?",(me['id'],rid)); row=c.execute("SELECT * FROM resource_requests WHERE id=?",(rid,)).fetchone(); table,regid=register_approved_request(c,row); c.execute("UPDATE resource_requests SET registered_table=?,registered_id=? WHERE id=?",(table,regid,rid)); flash(f'✅ {row["request_no"]} finally approved and registered in {table}.','success')
         c.commit()
     except Exception as e: c.rollback(); flash('Approval failed: '+str(e),'error')
     c.close(); return redirect(url_for('resource_requests',pid=row['project_id']) if row['project_id'] else url_for('resource_requests'))
@@ -1309,7 +1360,7 @@ def expense_claim(pid):
 @login_required
 def process_expense_claim(pid,eid,action):
     me=current_user()
-    if me['role']!='SUPER_ADMIN' and me['department']!='Finance':
+    if me['role']!='SUPER_ADMIN' and me['department']!='Finance' and not project_admin(pid):
         flash("🚫 Finance / Super Admin approval is required.","error"); return redirect(url_for("expense_claim",pid=pid))
     c=db(); row=c.execute("SELECT * FROM expense_claims WHERE id=? AND project_id=?",(eid,pid)).fetchone()
     if not row: c.close(); flash("Expense claim not found.","error"); return redirect(url_for("expense_claim",pid=pid))
@@ -1638,8 +1689,9 @@ def import_boq_xlsx(path,pid):
     return count, ", ".join(sheets)
 
 @app.route("/admin/boq/<int:pid>",methods=["GET","POST"])
-@admin_required
+@login_required
 def boq_admin(pid):
+    if not project_admin(pid): return redirect(url_for("project",pid=pid))
     c=db()
     if request.method=="POST":
         action=request.form.get("action")
@@ -1681,3 +1733,102 @@ def security_headers(resp):
 
 init_db()
 if __name__=="__main__":app.run(host="0.0.0.0",port=int(os.environ.get("PORT",5000)),debug=True)
+
+
+# ==================== V27 PROJECT ADMIN / HEAD OFFICE ROUTING ====================
+@app.route('/requests/<int:rid>/send-head-office', methods=['POST'])
+@login_required
+def send_request_head_office(rid):
+    me=current_user(); c=db(); row=c.execute("SELECT * FROM resource_requests WHERE id=?",(rid,)).fetchone()
+    if not row or not row['project_id']: c.close(); flash('Project request not found.','error'); return redirect(url_for('resource_requests'))
+    if me['role']!='SUPER_ADMIN' and not project_admin(row['project_id']): c.close(); flash('Only the Project Manager can route this request to Head Office.','error'); return redirect(url_for('resource_requests',pid=row['project_id']))
+    try:
+        uid=int(request.form.get('head_office_user_id') or 0); target=c.execute("SELECT * FROM users WHERE id=? AND active=1",(uid,)).fetchone()
+        if not target: raise ValueError('Select a Head Office recipient.')
+        maxstep=c.execute("SELECT COALESCE(MAX(step_order),0) n FROM request_steps WHERE request_id=?",(rid,)).fetchone()['n']
+        c.execute("INSERT INTO request_steps(request_id,step_order,stage,assigned_user_id,to_org_unit_id,department,status,action,comments) VALUES(?,?,?,?,?,?,?,?,?)",(rid,maxstep+1,'HEAD_OFFICE_REVIEW',uid,target['org_unit_id'],target['department'],'PENDING','SENT',request.form.get('comments','Sent by Project Manager')))
+        c.execute("UPDATE resource_requests SET next_approver_user_id=?,current_stage='HEAD_OFFICE_REVIEW',status='HEAD_OFFICE_REVIEW',head_office_sent_at=CURRENT_TIMESTAMP WHERE id=?",(uid,rid)); c.commit(); flash(f'📤 {row["request_no"]} sent to {target["full_name"]} in Head Office.','success')
+    except Exception as e: c.rollback(); flash('Head Office routing failed: '+str(e),'error')
+    c.close(); return redirect(url_for('resource_requests',pid=row['project_id']))
+
+@app.route('/requests/<int:rid>/forward-head-office', methods=['POST'])
+@login_required
+def forward_request_head_office(rid):
+    me=current_user(); c=db(); row=c.execute("SELECT * FROM resource_requests WHERE id=?",(rid,)).fetchone()
+    if not row or not user_can_approve_request(me,row): c.close(); flash('Only the current Head Office recipient can forward this request.','error'); return redirect(url_for('resource_requests',pid=row['project_id']) if row and row['project_id'] else url_for('resource_requests'))
+    try:
+        uid=int(request.form.get('head_office_user_id') or 0); target=c.execute("SELECT * FROM users WHERE id=? AND active=1",(uid,)).fetchone()
+        if not target: raise ValueError('Select another Head Office recipient.')
+        maxstep=c.execute("SELECT COALESCE(MAX(step_order),0) n FROM request_steps WHERE request_id=?",(rid,)).fetchone()['n']
+        oldstep=current_request_step(c,rid)
+        if oldstep: c.execute("UPDATE request_steps SET status='FORWARDED',action='FORWARDED',comments=?,acted_at=CURRENT_TIMESTAMP WHERE id=?",(request.form.get('comments','Forwarded by Head Office'),oldstep['id']))
+        c.execute("INSERT INTO request_steps(request_id,step_order,stage,assigned_user_id,to_org_unit_id,department,status,action,comments) VALUES(?,?,?,?,?,?,?,?,?)",(rid,maxstep+1,'HEAD_OFFICE_REVIEW',uid,target['org_unit_id'],target['department'],'PENDING','FORWARDED',request.form.get('comments','Forwarded by Head Office')))
+        c.execute("UPDATE resource_requests SET next_approver_user_id=?,current_stage='HEAD_OFFICE_REVIEW',status='HEAD_OFFICE_REVIEW' WHERE id=?",(uid,rid)); c.commit(); flash(f'➡️ {row["request_no"]} forwarded to {target["full_name"]}.','success')
+    except Exception as e: c.rollback(); flash('Forward failed: '+str(e),'error')
+    c.close(); return redirect(url_for('resource_requests',pid=row['project_id']) if row['project_id'] else url_for('resource_requests'))
+
+@app.route('/projects/<int:pid>/team/responsibilities', methods=['POST'])
+@login_required
+def update_project_responsibilities(pid):
+    me=current_user()
+    if not project_admin(pid): return redirect(url_for('project_team',pid=pid))
+    c=db()
+    try:
+        selected={int(x) for x in request.form.getlist('responsible_user_ids') if str(x).isdigit()}
+        area=request.form.get('responsibility_area','General Project') or 'General Project'
+        c.execute("UPDATE project_responsibilities SET active=0 WHERE project_id=? AND responsibility_area=?",(pid,area))
+        for uid in selected:
+            c.execute("INSERT INTO project_responsibilities(project_id,user_id,responsibility_area,source,assigned_by,active) VALUES(?,?,?,?,?,1) ON CONFLICT(project_id,user_id,responsibility_area) DO UPDATE SET active=1,source=excluded.source,assigned_by=excluded.assigned_by",(pid,uid,area,'Project Admin',me['id']))
+        c.commit(); flash(f'👥 {area} responsibility list updated.','success')
+    except Exception as e: c.rollback(); flash('Responsibility update failed: '+str(e),'error')
+    c.close(); return redirect(url_for('project_team',pid=pid))
+
+@app.route('/projects/<int:pid>/manpower/import', methods=['POST'])
+@login_required
+def import_manpower_excel(pid):
+    if not (project_admin(pid) or can_module('HR')): return redirect(url_for('manpower',pid=pid))
+    f=request.files.get('excel_file')
+    if not f or not f.filename.lower().endswith(('.xlsx','.xlsm')): flash('Please select an Excel .xlsx/.xlsm file.','error'); return redirect(url_for('manpower',pid=pid))
+    path=os.path.join(WORKFLOW_FILES,'import_'+secure_filename(f.filename)); f.save(path)
+    try:
+        wb=load_workbook(path,data_only=True); ws=wb.active; headers=[str(x.value or '').strip().lower() for x in ws[1]]; idx={h:i for i,h in enumerate(headers)}
+        def val(row,names,default=''):
+            for n in names:
+                if n in idx:return row[idx[n]].value
+            return default
+        c=db(); count=0
+        for row in ws.iter_rows(min_row=2):
+            name=val(row,['name','full name','employee name','staff name'])
+            if not name: continue
+            c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,working_hours,hourly_rate,daily_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,val(row,['date']) or dt.date.today().isoformat(),str(name),val(row,['employment','type'],'Temporary') or 'Temporary',val(row,['position','job title'],'Other') or 'Other',parse_float(val(row,['present','qty'],1)),parse_float(val(row,['working hours','hours'],8)),parse_float(val(row,['hourly rate','rate/hour'],0)),parse_float(val(row,['daily rate','rate/day'],0)),'Imported from Excel',current_user()['id'])); count+=1
+        c.commit(); c.close(); flash(f'📥 Imported {count} manpower records from Excel.','success')
+    except Exception as e: flash('Manpower Excel import failed: '+str(e),'error')
+    try: os.remove(path)
+    except: pass
+    return redirect(url_for('manpower',pid=pid))
+
+@app.route('/projects/<int:pid>/machinery/import', methods=['POST'])
+@login_required
+def import_machinery_excel(pid):
+    if not (project_admin(pid) or can_module('Machinery')): return redirect(url_for('machinery',pid=pid))
+    f=request.files.get('excel_file')
+    if not f or not f.filename.lower().endswith(('.xlsx','.xlsm')): flash('Please select an Excel .xlsx/.xlsm file.','error'); return redirect(url_for('machinery',pid=pid))
+    path=os.path.join(WORKFLOW_FILES,'import_'+secure_filename(f.filename)); f.save(path)
+    try:
+        wb=load_workbook(path,data_only=True); ws=wb.active; headers=[str(x.value or '').strip().lower() for x in ws[1]]; idx={h:i for i,h in enumerate(headers)}
+        def val(row,names,default=''):
+            for n in names:
+                if n in idx:return row[idx[n]].value
+            return default
+        c=db(); count=0
+        for row in ws.iter_rows(min_row=2):
+            code=val(row,['code','fleet code','machine code']); plate=val(row,['plate','plate no','plate number']); engine=val(row,['engine','engine no','engine number'])
+            if not (code or plate or engine): continue
+            dup=c.execute("SELECT id FROM machines WHERE project_id=? AND (code=? OR (plate_no<>'' AND plate_no=?) OR (engine_no<>'' AND engine_no=?))",(pid,str(code),str(plate),str(engine))).fetchone()
+            if dup: continue
+            c.execute("INSERT INTO machines(project_id,machine_type,code,plate_no,engine_no,ownership,hourly_rate,rate_unit,expected_fuel,fuel_price,active) VALUES(?,?,?,?,?,?,?,?,?,?,1)",(pid,val(row,['machine type','type'],'Other') or 'Other',str(code or ''),str(plate or ''),str(engine or ''),val(row,['ownership','owner'],'Owned') or 'Owned',parse_float(val(row,['rate','hourly rate'],0)),val(row,['rate unit','basis'],'hr') or 'hr',parse_float(val(row,['expected fuel','fuel l/hr'],0)),parse_float(val(row,['fuel price','fuel price/l'],0)))); count+=1
+        c.commit(); c.close(); flash(f'📥 Imported {count} machinery records from Excel.','success')
+    except Exception as e: flash('Machinery Excel import failed: '+str(e),'error')
+    try: os.remove(path)
+    except: pass
+    return redirect(url_for('machinery',pid=pid))
