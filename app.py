@@ -171,6 +171,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS resource_requests(id INTEGER PRIMARY KEY,request_no TEXT UNIQUE,request_type TEXT,project_id INTEGER,requested_by INTEGER,requester_org_unit_id INTEGER,next_approver_user_id INTEGER,title TEXT,description TEXT,quantity REAL DEFAULT 0,unit TEXT,amount REAL DEFAULT 0,payload_json TEXT DEFAULT '{}',attachment_file TEXT,attachment_name TEXT,status TEXT DEFAULT 'SUBMITTED',approved_by INTEGER,approved_at TEXT,rejected_by INTEGER,rejected_at TEXT,rejection_reason TEXT,registered_table TEXT,registered_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS request_steps(id INTEGER PRIMARY KEY,request_id INTEGER,step_order INTEGER,stage TEXT,assigned_user_id INTEGER,to_org_unit_id INTEGER,department TEXT,status TEXT DEFAULT 'PENDING',action TEXT,comments TEXT,acted_at TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(request_id,step_order));
     CREATE TABLE IF NOT EXISTS project_responsibilities(id INTEGER PRIMARY KEY,project_id INTEGER,user_id INTEGER,responsibility_area TEXT DEFAULT 'General Project',source TEXT DEFAULT 'Manual',assigned_by INTEGER,active INTEGER DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(project_id,user_id,responsibility_area));
+    CREATE TABLE IF NOT EXISTS personnel_project_contacts(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL,head_office_user_id INTEGER NOT NULL,project_user_id INTEGER NOT NULL,responsibility_area TEXT DEFAULT 'General Project',active INTEGER DEFAULT 1,assigned_by INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(project_id,head_office_user_id,project_user_id,responsibility_area));
     ''')
     existing_users=[r['name'] for r in c.execute("PRAGMA table_info(users)").fetchall()]
     if 'personnel_scope' not in existing_users: c.execute("ALTER TABLE users ADD COLUMN personnel_scope TEXT DEFAULT 'PROJECT'")
@@ -562,8 +563,14 @@ def project(pid):
         sd=dt.date.fromisoformat(start); ed=dt.date.fromisoformat(end); total=max((ed-sd).days,0); elapsed=max(min((today-sd).days,total),0); schedule_pct=(elapsed/total*100) if total else 0; time_variance_pct=physical_pct-schedule_pct; days_remaining=(ed-today).days
     planned_income=p["planned_income"] or 0; income_variance=actual_income-planned_income
     crew_count=c.execute("SELECT COUNT(*) n FROM project_crews WHERE project_id=?",(pid,)).fetchone()["n"]
+    # Project page also needs the same responsibility/contact context as the Project Team page.
+    project_users=c.execute("SELECT u.id,u.full_name,u.department,u.position,o.name org_unit_name FROM users u JOIN project_assignments pa ON pa.user_id=u.id AND pa.project_id=? AND pa.active=1 LEFT JOIN org_units o ON o.id=u.org_unit_id WHERE u.active=1 AND u.personnel_scope='PROJECT' ORDER BY u.full_name",(pid,)).fetchall()
+    head_users=c.execute("SELECT u.id,u.full_name,u.department,u.position,o.name org_unit_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id WHERE u.active=1 AND u.personnel_scope='HEAD_OFFICE' ORDER BY u.full_name").fetchall()
+    responsibility_map={}
+    for area in ['General Project','Store','Machinery','Fuel','Manpower / HR','Finance','Design','Procurement','Project Management','HSE / Safety','QA/QC','Survey','Contract Administration']:
+        responsibility_map[area]={r['user_id'] for r in c.execute("SELECT user_id FROM project_responsibilities WHERE project_id=? AND responsibility_area=? AND active=1",(pid,area)).fetchall()}
     c.close()
-    return render_template("project.html",pid=pid,p=p,boq_count=boq_count,machine_count=machine_count,mat_count=mat_count,actual_income=actual_income,actual_expense=actual_expense,contract_value=contract_value,physical_pct=physical_pct,schedule_pct=schedule_pct,time_variance_pct=time_variance_pct,days_remaining=days_remaining,planned_income=planned_income,income_variance=income_variance,crew_count=crew_count)
+    return render_template("project.html",pid=pid,p=p,boq_count=boq_count,machine_count=machine_count,mat_count=mat_count,actual_income=actual_income,actual_expense=actual_expense,contract_value=contract_value,physical_pct=physical_pct,schedule_pct=schedule_pct,time_variance_pct=time_variance_pct,days_remaining=days_remaining,planned_income=planned_income,income_variance=income_variance,crew_count=crew_count,project_users=project_users,head_users=head_users,responsibility_map=responsibility_map)
 
 
 def variation_check(c,pid,boq_id,additional_qty,d):
@@ -1474,8 +1481,16 @@ def users():
     responsibility_people={}
     for u in users:
         responsibility_people[u["id"]]=c.execute("SELECT r.scope_type,u.full_name,p.name project_name FROM responsibilities r JOIN users u ON u.id=r.subordinate_user_id LEFT JOIN projects p ON p.id=r.project_id WHERE r.supervisor_user_id=? AND r.active=1 ORDER BY r.scope_type,p.name,u.full_name",(u["id"],)).fetchall()
+    # Project personnel available to each project, used by the Head Office contact assignment UI.
+    project_contact_people={}
+    for p in projects:
+        project_contact_people[p['id']]=c.execute("SELECT u.id,u.full_name,u.department,u.position FROM project_assignments pa JOIN users u ON u.id=pa.user_id WHERE pa.project_id=? AND pa.active=1 AND u.active=1 AND u.personnel_scope='PROJECT' ORDER BY u.full_name",(p['id'],)).fetchall()
+    ho_contact_links={}
+    for u in users:
+        if u['personnel_scope']=='HEAD_OFFICE':
+            ho_contact_links[u['id']]=c.execute("SELECT pc.project_id,pc.project_user_id,pc.responsibility_area,p.name project_name,pu.full_name project_user_name FROM personnel_project_contacts pc JOIN projects p ON p.id=pc.project_id JOIN users pu ON pu.id=pc.project_user_id WHERE pc.head_office_user_id=? AND pc.active=1 ORDER BY p.name,pc.responsibility_area,pu.full_name",(u['id'],)).fetchall()
     c.close()
-    return render_template("users.html",users=users,projects=projects,assign=assign,project_assignments=project_assignments,org_units=units,responsibility_counts=responsibility_counts,responsibility_people=responsibility_people)
+    return render_template("users.html",users=users,projects=projects,assign=assign,project_assignments=project_assignments,org_units=units,responsibility_counts=responsibility_counts,responsibility_people=responsibility_people,project_contact_people=project_contact_people,ho_contact_links=ho_contact_links)
 
 @app.route("/admin/users/add",methods=["POST"])
 @admin_required
@@ -1618,6 +1633,29 @@ def assign_projects(uid):
     c.execute("UPDATE responsibilities SET active=0 WHERE subordinate_user_id=? AND scope_type='PROJECT'",(uid,))
     c.execute("INSERT OR IGNORE INTO responsibilities(supervisor_user_id,subordinate_user_id,scope_type,project_id,source) SELECT manager_user_id,user_id,'PROJECT',project_id,'Project Assignment' FROM project_assignments WHERE user_id=? AND active=1 AND manager_user_id IS NOT NULL",(uid,))
     c.commit();c.close();flash("🏗️ Project access and project assignment status updated.","success");return redirect(url_for("users"))
+
+@app.route("/admin/users/<int:uid>/project-contacts", methods=["POST"])
+@admin_required
+def assign_head_office_project_contacts(uid):
+    c=db()
+    try:
+        ho=c.execute("SELECT * FROM users WHERE id=? AND active=1 AND personnel_scope='HEAD_OFFICE'",(uid,)).fetchone()
+        if not ho: raise ValueError("Selected account is not an active Head Office personnel account.")
+        pid=int(request.form.get('project_id') or 0)
+        area=(request.form.get('responsibility_area') or 'General Project').strip()
+        if not c.execute("SELECT id FROM projects WHERE id=?",(pid,)).fetchone(): raise ValueError("Project not found.")
+        selected={int(x) for x in request.form.getlist('project_user_ids') if str(x).isdigit()}
+        # The HO user gets project responsibility/access; selected project staff become direct contacts.
+        c.execute("INSERT INTO project_responsibilities(project_id,user_id,responsibility_area,source,assigned_by,active) VALUES(?,?,?,?,?,1) ON CONFLICT(project_id,user_id,responsibility_area) DO UPDATE SET active=1,source=excluded.source,assigned_by=excluded.assigned_by",(pid,uid,area,'User Contact Assignment',current_user()['id']))
+        c.execute("UPDATE personnel_project_contacts SET active=0 WHERE project_id=? AND head_office_user_id=? AND responsibility_area=?",(pid,uid,area))
+        for puid in selected:
+            valid=c.execute("SELECT id FROM users u JOIN project_assignments pa ON pa.user_id=u.id AND pa.project_id=? AND pa.active=1 WHERE u.id=? AND u.active=1 AND u.personnel_scope='PROJECT'",(pid,puid)).fetchone()
+            if not valid: continue
+            c.execute("INSERT INTO personnel_project_contacts(project_id,head_office_user_id,project_user_id,responsibility_area,active,assigned_by) VALUES(?,?,?,?,1,?) ON CONFLICT(project_id,head_office_user_id,project_user_id,responsibility_area) DO UPDATE SET active=1,assigned_by=excluded.assigned_by",(pid,uid,puid,area,current_user()['id']))
+        c.commit(); flash(f"🤝 Head Office contact assignment saved for {ho['full_name']} on the selected project team.","success")
+    except Exception as e:
+        c.rollback(); flash("Could not save Head Office/project contact assignment: "+str(e),"error")
+    c.close(); return redirect(url_for('users'))
 
 @app.route("/admin/projects",methods=["GET","POST"])
 @admin_required
