@@ -563,7 +563,7 @@ def project(pid):
     planned_income=p["planned_income"] or 0; income_variance=actual_income-planned_income
     crew_count=c.execute("SELECT COUNT(*) n FROM project_crews WHERE project_id=?",(pid,)).fetchone()["n"]
     c.close()
-    return render_template("project.html",p=p,boq_count=boq_count,machine_count=machine_count,mat_count=mat_count,actual_income=actual_income,actual_expense=actual_expense,contract_value=contract_value,physical_pct=physical_pct,schedule_pct=schedule_pct,time_variance_pct=time_variance_pct,days_remaining=days_remaining,planned_income=planned_income,income_variance=income_variance,crew_count=crew_count)
+    return render_template("project.html",pid=pid,p=p,boq_count=boq_count,machine_count=machine_count,mat_count=mat_count,actual_income=actual_income,actual_expense=actual_expense,contract_value=contract_value,physical_pct=physical_pct,schedule_pct=schedule_pct,time_variance_pct=time_variance_pct,days_remaining=days_remaining,planned_income=planned_income,income_variance=income_variance,crew_count=crew_count)
 
 
 def variation_check(c,pid,boq_id,additional_qty,d):
@@ -1075,9 +1075,10 @@ def assign_project_role(uid):
     c=db()
     try:
         pid=int(request.form["project_id"]); position=request.form.get("project_position","").strip(); manager=request.form.get("project_manager_id") or None
-        c.execute("INSERT INTO user_projects(user_id,project_id) VALUES(?,?) ON CONFLICT(user_id,project_id) DO NOTHING",(uid,pid))
         userrow=c.execute("SELECT personnel_scope FROM users WHERE id=?",(uid,)).fetchone()
-        if userrow and userrow['personnel_scope']!='PROJECT': raise ValueError('Head Office personnel cannot be added as Project Team personnel. Assign them as Head Office responsible personnel instead.')
+        if not userrow: raise ValueError("User not found.")
+        if (userrow['personnel_scope'] or "PROJECT")!="PROJECT": raise ValueError("Head Office personnel cannot be added as Project Team personnel. Assign them as Head Office responsible personnel instead.")
+        c.execute("INSERT INTO user_projects(user_id,project_id) VALUES(?,?) ON CONFLICT(user_id,project_id) DO NOTHING",(uid,pid))
         c.execute("INSERT INTO project_assignments(user_id,project_id,position,manager_user_id,active) VALUES(?,?,?,?,1) ON CONFLICT(user_id,project_id) DO UPDATE SET position=excluded.position,manager_user_id=excluded.manager_user_id,active=1",(uid,pid,position,manager))
         c.execute("DELETE FROM responsibilities WHERE subordinate_user_id=? AND scope_type='PROJECT' AND project_id=?",(uid,pid))
         if manager: c.execute("INSERT OR IGNORE INTO responsibilities(supervisor_user_id,subordinate_user_id,scope_type,project_id,source) VALUES(?,?,?,?,?)",(manager,uid,'PROJECT',pid,'Project Assignment'))
