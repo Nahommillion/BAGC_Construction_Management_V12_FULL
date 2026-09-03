@@ -54,6 +54,7 @@
 </form>
 
 <section class="panel"><h2>🚨 BOQ Variation Alerts</h2>{% for a in alerts %}<div class="alert"><b>{{a.item_no}}</b> — {{a.message}} <small>({{a.date}})</small></div>{% else %}<p>No quantity has exceeded its BOQ contract quantity.</p>{% endfor %}</section>
+<section class="panel"><h2>🔄 Inter-Project Transfers Recorded Today</h2><p>Transfers received or sent are automatically registered here as part of the Daily Report record.</p>{% if transfer_logs %}<table><tr><th>Direction</th><th>Type</th><th>Description</th></tr>{% for x in transfer_logs %}<tr><td>{{x.direction}}</td><td>{{x.transfer_type}}</td><td>{{x.description}}</td></tr>{% endfor %}</table>{% else %}<p>No inter-project transfer was recorded for this date.</p>{% endif %}</section>
 <section class="panel"><h2>📚 Daily Report Archive</h2><p>The complete Daily Report is automatically archived after the one-save transaction.</p><p><a class="btn small" href="{{url_for('reports',pid=pid)}}?report_type=DAILY&scope=ALL&start={{date}}&end={{date}}">Open Saved Reports</a></p></section>
 <div class="table-card"><h2>📈 Recent BOQ Work</h2><table><tr><th>Date</th><th>Series</th><th>Item</th><th>Description</th><th>Qty</th><th>Income</th></tr>{% for r in recent %}<tr><td>{{r.date}}</td><td>{{r.series if r.series else '—'}}</td><td>{{r.item_no}}</td><td>{{r.description}}</td><td>{{r.quantity}} {{r.unit}}</td><td><b>ETB {{'{:,.2f}'.format(r.amount)}}</b></td></tr>{% endfor %}</table></div>
 
