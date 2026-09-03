@@ -103,10 +103,34 @@ def template_helpers():
     return {"dt": dt, "head_office_units": HEAD_OFFICE_STRUCTURE, "project_admin": project_admin}
 
 
+class RetryConnection(sqlite3.Connection):
+    """SQLite connection that tolerates short concurrent-write locks on Render/local use."""
+    def _retry(self, fn, *args, **kwargs):
+        last=None
+        for attempt in range(12):
+            try:
+                return fn(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                last=e
+                if "locked" not in str(e).lower() and "busy" not in str(e).lower():
+                    raise
+                import time
+                time.sleep(min(0.25 * (attempt + 1), 2.0))
+        raise last
+    def execute(self, *args, **kwargs): return self._retry(super().execute, *args, **kwargs)
+    def executemany(self, *args, **kwargs): return self._retry(super().executemany, *args, **kwargs)
+    def executescript(self, *args, **kwargs): return self._retry(super().executescript, *args, **kwargs)
+    def commit(self): return self._retry(super().commit)
+
 def db():
-    c=sqlite3.connect(DB, timeout=30, isolation_level="DEFERRED")
+    c=sqlite3.connect(DB, timeout=60, isolation_level="DEFERRED", check_same_thread=False, factory=RetryConnection)
     c.row_factory=sqlite3.Row
-    c.execute("PRAGMA busy_timeout=30000")
+    try: c.execute("PRAGMA busy_timeout=60000")
+    except sqlite3.OperationalError: pass
+    # WAL is enabled once during init_db; avoid changing journal mode on every request because
+    # that can itself contend for SQLite's schema lock under concurrent requests.
+    try: c.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.OperationalError: pass
     c.execute("PRAGMA foreign_keys=ON")
     return c
 
@@ -169,6 +193,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS machine_transfers(id INTEGER PRIMARY KEY,from_project_id INTEGER,to_project_id INTEGER,machine_id INTEGER,date TEXT,notes TEXT,sent_by INTEGER,received_by INTEGER,status TEXT DEFAULT 'SENT',sent_at TEXT DEFAULT CURRENT_TIMESTAMP,received_at TEXT);
     CREATE TABLE IF NOT EXISTS manpower_transfers(id INTEGER PRIMARY KEY,from_project_id INTEGER,to_project_id INTEGER,date TEXT,name TEXT,employment TEXT,position TEXT,working_hours REAL DEFAULT 8,hourly_rate REAL DEFAULT 0,daily_rate REAL DEFAULT 0,reference TEXT,notes TEXT,sent_by INTEGER,received_by INTEGER,status TEXT DEFAULT 'SENT',sent_at TEXT DEFAULT CURRENT_TIMESTAMP,received_at TEXT);
     CREATE TABLE IF NOT EXISTS daily_transfer_logs(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,transfer_type TEXT,direction TEXT,transfer_id INTEGER,description TEXT,user_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS transfer_approvals(id INTEGER PRIMARY KEY,transfer_type TEXT,transfer_id INTEGER,step_order INTEGER,stage TEXT,approver_user_id INTEGER,status TEXT DEFAULT 'PENDING',action TEXT,comments TEXT,acted_at TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(transfer_type,transfer_id,step_order));
     CREATE TABLE IF NOT EXISTS expense_claims(id INTEGER PRIMARY KEY,project_id INTEGER,date TEXT,beneficiary_user_id INTEGER,beneficiary_name TEXT,category TEXT,description TEXT,amount REAL DEFAULT 0,paid_by_company INTEGER DEFAULT 1,receipt_file TEXT,receipt_name TEXT,submitted_by INTEGER,approved_by INTEGER,status TEXT DEFAULT 'SUBMITTED',created_at TEXT DEFAULT CURRENT_TIMESTAMP,approved_at TEXT);
     CREATE TABLE IF NOT EXISTS project_assignments(id INTEGER PRIMARY KEY,user_id INTEGER,project_id INTEGER,position TEXT,manager_user_id INTEGER,active INTEGER DEFAULT 1,UNIQUE(user_id,project_id));
     CREATE TABLE IF NOT EXISTS responsibilities(id INTEGER PRIMARY KEY,supervisor_user_id INTEGER,subordinate_user_id INTEGER,scope_type TEXT NOT NULL,project_id INTEGER,active INTEGER DEFAULT 1,source TEXT DEFAULT 'Manual',created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(supervisor_user_id,subordinate_user_id,scope_type,project_id));
@@ -599,7 +624,10 @@ def application_error(error):
     import traceback
     app.logger.error("Unhandled BAGC application error: %s\n%s", error, traceback.format_exc())
     if request.path.startswith('/projects/'):
-        flash("⚠️ Could not save this entry. Nothing was intentionally deleted. Please check the fields and try again. Error: "+str(error),"error")
+        if request.method == 'POST':
+            flash("⚠️ Could not save this entry. Nothing was intentionally deleted. Please check the fields and try again. Error: "+str(error),"error")
+        else:
+            flash("⚠️ Could not open this project page. Error: "+str(error),"error")
         return redirect(request.referrer or url_for('dashboard'))
     return ("Internal Server Error: "+str(error),500)
 
@@ -1337,6 +1365,105 @@ def workflow_file(filename):
 def receive_workflow_file(wfid):
     c=db(); me=current_user(); c.execute("UPDATE workflow_files SET status='RECEIVED',received_at=? WHERE id=? AND (to_user_id=? OR to_org_unit_id=?)",(dt.datetime.now().isoformat(timespec="seconds"),wfid,me["id"],me["org_unit_id"] or -1)); c.commit(); c.close(); flash("📥 File marked as received.","success"); return redirect(url_for("workflow"))
 
+def _transfer_manager(c, kind):
+    """Find the Head Office functional manager for a transfer type."""
+    patterns={
+        'material': ['Store Manager','Senior Store Officer','Store Officer','Department Head'],
+        'fuel': ['Fuel Manager','Senior Fuel Officer','Fuel Officer','Machinery Manager','Department Head'],
+        'machine': ['Machinery Manager','Equipment Manager','Senior Equipment Officer','Equipment Engineer','Department Head'],
+        'manpower': ['HR Manager','HR Head','HR Officer','Department Head'],
+    }
+    for pos in patterns[kind]:
+        r=c.execute("SELECT id FROM users WHERE active=1 AND personnel_scope='HEAD_OFFICE' AND lower(position)=lower(?) ORDER BY id LIMIT 1",(pos,)).fetchone()
+        if r: return r['id']
+    # Last controlled fallback: active Head Office Department Head.
+    r=c.execute("SELECT id FROM users WHERE active=1 AND personnel_scope='HEAD_OFFICE' AND lower(position) LIKE '%department head%' ORDER BY id LIMIT 1").fetchone()
+    return r['id'] if r else None
+
+def _transfer_project_manager(c, project_id):
+    r=c.execute("SELECT pa.manager_user_id FROM project_assignments pa JOIN users u ON u.id=pa.manager_user_id WHERE pa.project_id=? AND pa.active=1 AND u.active=1 AND u.personnel_scope='PROJECT' AND lower(pa.position) LIKE '%project manager%' ORDER BY pa.id LIMIT 1",(project_id,)).fetchone()
+    if r and r['manager_user_id']: return r['manager_user_id']
+    r=c.execute("SELECT pa.user_id FROM project_assignments pa JOIN users u ON u.id=pa.user_id WHERE pa.project_id=? AND pa.active=1 AND u.active=1 AND u.personnel_scope='PROJECT' AND lower(pa.position) LIKE '%project manager%' ORDER BY pa.id LIMIT 1",(project_id,)).fetchone()
+    return r['user_id'] if r else None
+
+def _seed_transfer_approval(c, kind, tid, source_pid):
+    pm=_transfer_project_manager(c,source_pid)
+    manager=_transfer_manager(c,kind)
+    if not pm: raise ValueError('The source project has no active Project Manager assigned. Assign the Project Manager before sending a transfer.')
+    if not manager: raise ValueError('No Head Office functional manager is available for this transfer type. Assign the responsible manager first.')
+    c.execute("INSERT INTO transfer_approvals(transfer_type,transfer_id,step_order,stage,approver_user_id,status) VALUES(?,?,?,?,?,?)",(kind,tid,1,'PROJECT_MANAGER',pm,'PENDING'))
+    c.execute("INSERT INTO transfer_approvals(transfer_type,transfer_id,step_order,stage,approver_user_id,status) VALUES(?,?,?,?,?,?)",(kind,tid,2,'HEAD_OFFICE_MANAGER',manager,'PENDING'))
+    c.execute("INSERT OR IGNORE INTO project_responsibilities(project_id,user_id,responsibility_area,source,assigned_by,active) VALUES(?,?,?,?,?,1)",(source_pid,manager,f'Transfer Approval - {kind.title()}','Transfer Workflow',current_user()['id']))
+
+def _mark_transfer_delivered(c, kind, tid, me):
+    """Post the OUT side only after both approvals. Receipt posts the IN side."""
+    table={'material':'material_transfers','fuel':'fuel_transfers','machine':'machine_transfers','manpower':'manpower_transfers'}[kind]
+    row=c.execute(f"SELECT * FROM {table} WHERE id=?",(tid,)).fetchone()
+    if not row or row['status'] not in ('PENDING_APPROVAL','APPROVED'): raise ValueError('Transfer is not ready for delivery.')
+    now=dt.datetime.now().isoformat(timespec='seconds')
+    if kind=='material':
+        bal=c.execute("SELECT COALESCE(SUM(received-issued),0) FROM store_logs WHERE project_id=? AND material_id=?",(row['from_project_id'],row['material_id'])).fetchone()[0]
+        if row['quantity']>bal: raise ValueError(f'Insufficient source stock at delivery. Available balance: {bal:g}.')
+        c.execute("INSERT INTO store_logs(project_id,material_id,date,received,issued,unit_cost,reference,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?)",(row['from_project_id'],row['material_id'],row['date'],0,row['quantity'],row['unit_cost'],row['reference'] or f'Transfer to project {row["to_project_id"]}',row['notes'] or 'Inter-project material transfer delivered',me['id']))
+        desc=f'Material transfer OUT: {row["quantity"]:g} to project {row["to_project_id"]}'
+    elif kind=='fuel':
+        machine=row['machine_id']
+        price=row['unit_cost'] or 0
+        if machine:
+            m=c.execute("SELECT fuel_price FROM machines WHERE id=?",(machine,)).fetchone(); price=price or (m['fuel_price'] if m else 0)
+        c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id,source,transfer_out) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(row['from_project_id'],machine,row['date'],0,0,0,price,row['reference'] or f'Transfer to project {row["to_project_id"]}',row['notes'] or 'Inter-project fuel transfer delivered',me['id'],'Inter-project Transfer OUT',row['litres']))
+        desc=f'Fuel transfer OUT: {row["litres"]:g} L to project {row["to_project_id"]}'
+    elif kind=='machine':
+        m=c.execute("SELECT machine_type,code FROM machines WHERE id=? AND project_id=?",(row['machine_id'],row['from_project_id'])).fetchone()
+        if not m: raise ValueError('Machine is no longer in the source project fleet.')
+        c.execute("UPDATE machines SET active=0,lifecycle_status='TRANSFERRED' WHERE id=? AND project_id=?",(row['machine_id'],row['from_project_id']))
+        c.execute("INSERT INTO machine_logs(project_id,machine_id,date,notes,user_id) VALUES(?,?,?,?,?)",(row['from_project_id'],row['machine_id'],row['date'],f'INTER-PROJECT TRANSFER OUT to project {row["to_project_id"]}'+(f' · {row["notes"]}' if row['notes'] else ''),me['id']))
+        desc=f'Machinery transfer OUT: {m["machine_type"]} · {m["code"]} to project {row["to_project_id"]}'
+    else:
+        c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,working_hours,hourly_rate,daily_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(row['from_project_id'],row['date'],row['name'],row['employment'],row['position'],0,row['working_hours'],row['hourly_rate'],row['daily_rate'],f'INTER-PROJECT TRANSFER OUT to project {row["to_project_id"]}'+(f' · {row["notes"]}' if row['notes'] else ''),me['id']))
+        desc=f'Manpower transfer OUT: {row["name"]} · {row["position"]} to project {row["to_project_id"]}'
+    c.execute(f"UPDATE {table} SET status='DELIVERED',sent_at=COALESCE(sent_at,?) WHERE id=?",(now,tid))
+    c.execute("INSERT INTO daily_transfer_logs(project_id,date,transfer_type,direction,transfer_id,description,user_id) VALUES(?,?,?,?,?,?,?)",(row['from_project_id'],row['date'],kind.upper(),'OUT',tid,desc,me['id']))
+
+def _receive_transfer_post(c, kind, tid, pid, me):
+    table={'material':'material_transfers','fuel':'fuel_transfers','machine':'machine_transfers','manpower':'manpower_transfers'}[kind]
+    row=c.execute(f"SELECT * FROM {table} WHERE id=? AND to_project_id=? AND status='DELIVERED'",(tid,pid)).fetchone()
+    if not row: raise ValueError('Transfer is not delivered yet, has already been received, or is not addressed to this project.')
+    now=dt.datetime.now().isoformat(timespec='seconds')
+    c.execute(f"UPDATE {table} SET status='RECEIVED',received_by=?,received_at=? WHERE id=?",(me['id'],now,tid))
+    if kind=='material':
+        src=c.execute("SELECT * FROM materials WHERE id=?",(row['material_id'],)).fetchone()
+        if not src: raise ValueError('Source material no longer exists.')
+        target=c.execute("SELECT id FROM materials WHERE project_id=? AND name=?",(pid,src['name'])).fetchone()
+        if not target:
+            c.execute("INSERT INTO materials(project_id,category,name,unit,min_stock) VALUES(?,?,?,?,?)",(pid,src['category'],src['name'],src['unit'],src['min_stock']))
+            target=c.execute("SELECT last_insert_rowid() id").fetchone()
+        c.execute("INSERT INTO store_logs(project_id,material_id,date,received,issued,unit_cost,reference,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?)",(pid,target['id'],row['date'],row['quantity'],0,row['unit_cost'],row['reference'] or f'Transfer from project {row["from_project_id"]}',row['notes'] or 'Inter-project material transfer received',me['id']))
+        desc=f'Material transfer IN: {row["quantity"]:g} {src["unit"]} from project {row["from_project_id"]}'
+    elif kind=='fuel':
+        machine_id=row['machine_id']
+        if machine_id:
+            m=c.execute("SELECT id FROM machines WHERE id=? AND project_id=? AND active=1",(machine_id,pid)).fetchone()
+            if not m:
+                machine_id=None
+        if not machine_id:
+            machine=c.execute("SELECT id FROM machines WHERE project_id=? AND active=1 ORDER BY id LIMIT 1",(pid,)).fetchone()
+            machine_id=machine['id'] if machine else None
+        if not machine_id: raise ValueError('Fuel receipt needs an active receiving-project machine, or select/create a machine first.')
+        price=row['unit_cost'] or 0
+        m=c.execute("SELECT fuel_price FROM machines WHERE id=?",(machine_id,)).fetchone(); price=price or (m['fuel_price'] if m else 0)
+        c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id,source,transfer_out) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(pid,machine_id,row['date'],0,row['litres'],row['litres'],price,row['reference'] or f'Transfer from project {row["from_project_id"]}',row['notes'] or 'Inter-project fuel transfer received',me['id'],'Inter-project Transfer IN',0))
+        desc=f'Fuel transfer IN: {row["litres"]:g} L from project {row["from_project_id"]}'
+    elif kind=='machine':
+        c.execute("UPDATE machines SET project_id=?,active=1,lifecycle_status='ACTIVE' WHERE id=?",(pid,row['machine_id']))
+        m=c.execute("SELECT machine_type,code FROM machines WHERE id=?",(row['machine_id'],)).fetchone()
+        c.execute("INSERT INTO machine_logs(project_id,machine_id,date,notes,user_id) VALUES(?,?,?,?,?)",(pid,row['machine_id'],row['date'],f'INTER-PROJECT TRANSFER IN from project {row["from_project_id"]}'+(f' · {row["notes"]}' if row['notes'] else ''),me['id']))
+        desc=f'Machinery transfer IN: {m["machine_type"]} · {m["code"]} from project {row["from_project_id"]}'
+    else:
+        c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,working_hours,hourly_rate,daily_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,row['date'],row['name'],row['employment'],row['position'],1,row['working_hours'],row['hourly_rate'],row['daily_rate'],f'INTER-PROJECT TRANSFER IN from project {row["from_project_id"]}'+(f' · {row["notes"]}' if row['notes'] else ''),me['id']))
+        desc=f'Manpower transfer IN: {row["name"]} · {row["position"]} from project {row["from_project_id"]}'
+    c.execute("INSERT INTO daily_transfer_logs(project_id,date,transfer_type,direction,transfer_id,description,user_id) VALUES(?,?,?,?,?,?,?)",(pid,row['date'],kind.upper(),'IN',tid,desc,me['id']))
+
 @app.route("/projects/<int:pid>/transfers",methods=["GET","POST"])
 @login_required
 def transfers(pid):
@@ -1346,40 +1473,32 @@ def transfers(pid):
         action=request.form.get("action")
         try:
             to_pid=int(request.form["to_project_id"]); date=request.form.get("date",dt.date.today().isoformat()); ref=request.form.get("reference",""); notes=request.form.get("notes","")
+            if to_pid==pid: raise ValueError('Receiving project must be different from the source project.')
             if action=="material":
                 mid=int(request.form["material_id"]); qty=parse_float(request.form.get("quantity")); unit_cost=parse_float(request.form.get("unit_cost"))
                 if qty<=0: raise ValueError('Transfer quantity must be greater than zero.')
                 bal=c.execute("SELECT COALESCE(SUM(received-issued),0) FROM store_logs WHERE project_id=? AND material_id=?",(pid,mid)).fetchone()[0]
                 if qty>bal: raise ValueError(f'Insufficient source stock. Available balance: {bal:g}.')
-                cur=c.execute("INSERT INTO material_transfers(from_project_id,to_project_id,material_id,date,quantity,unit_cost,reference,notes,sent_by) VALUES(?,?,?,?,?,?,?,?,?)",(pid,to_pid,mid,date,qty,unit_cost,ref,notes,me["id"]))
-                tid=cur.lastrowid
-                c.execute("INSERT INTO store_logs(project_id,material_id,date,received,issued,unit_cost,reference,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?)",(pid,mid,date,0,qty,unit_cost,ref or f'Transfer to project {to_pid}',notes or 'Inter-project material transfer sent',me['id']))
-                desc=f'Material transfer OUT: {qty:g} {c.execute("SELECT unit FROM materials WHERE id=?",(mid,)).fetchone()[0]} to project {to_pid}'
-                c.execute("INSERT INTO daily_transfer_logs(project_id,date,transfer_type,direction,transfer_id,description,user_id) VALUES(?,?,?,?,?,?,?)",(pid,date,'MATERIAL','OUT',tid,desc,me['id']))
+                cur=c.execute("INSERT INTO material_transfers(from_project_id,to_project_id,material_id,date,quantity,unit_cost,reference,notes,status,sent_by) VALUES(?,?,?,?,?,?,?,?,?,?)",(pid,to_pid,mid,date,qty,unit_cost,ref,notes,'PENDING_APPROVAL',me['id'])); tid=cur.lastrowid; kind='material'
             elif action=="fuel":
                 litres=parse_float(request.form.get("litres")); mid=request.form.get("machine_id") or None; unit_cost=parse_float(request.form.get("unit_cost"))
                 if litres<=0: raise ValueError('Fuel transfer litres must be greater than zero.')
-                cur=c.execute("INSERT INTO fuel_transfers(from_project_id,to_project_id,machine_id,date,litres,unit_cost,reference,notes,sent_by) VALUES(?,?,?,?,?,?,?,?,?)",(pid,to_pid,mid,date,litres,unit_cost,ref,notes,me["id"]))
-                tid=cur.lastrowid
-                machine=c.execute("SELECT fuel_price,code,machine_type FROM machines WHERE id=?",(mid,)).fetchone() if mid else None
-                price=unit_cost or (machine['fuel_price'] if machine else 0)
-                c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id,source,transfer_out) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(pid,mid,date,0,0,0,price,ref or f'Transfer to project {to_pid}',notes or 'Inter-project fuel transfer sent',me['id'],'Inter-project Transfer OUT',litres))
-                desc=f'Fuel transfer OUT: {litres:g} L to project {to_pid}'
-                c.execute("INSERT INTO daily_transfer_logs(project_id,date,transfer_type,direction,transfer_id,description,user_id) VALUES(?,?,?,?,?,?,?)",(pid,date,'FUEL','OUT',tid,desc,me['id']))
+                cur=c.execute("INSERT INTO fuel_transfers(from_project_id,to_project_id,machine_id,date,litres,unit_cost,reference,notes,status,sent_by) VALUES(?,?,?,?,?,?,?,?,?,?)",(pid,to_pid,mid,date,litres,unit_cost,ref,notes,'PENDING_APPROVAL',me['id'])); tid=cur.lastrowid; kind='fuel'
             elif action=="machine":
-                mid=int(request.form["machine_id"]); cur=c.execute("INSERT INTO machine_transfers(from_project_id,to_project_id,machine_id,date,notes,sent_by) VALUES(?,?,?,?,?,?)",(pid,to_pid,mid,date,notes,me["id"])); tid=cur.lastrowid
-                m=c.execute("SELECT machine_type,code FROM machines WHERE id=?",(mid,)).fetchone()
-                c.execute("UPDATE machines SET active=0 WHERE id=?",(mid,))
-                c.execute("INSERT INTO machine_logs(project_id,machine_id,date,notes,user_id) VALUES(?,?,?,?,?)",(pid,mid,date,f'INTER-PROJECT TRANSFER OUT to project {to_pid}'+(f' · {notes}' if notes else ''),me['id']))
-                c.execute("INSERT INTO daily_transfer_logs(project_id,date,transfer_type,direction,transfer_id,description,user_id) VALUES(?,?,?,?,?,?,?)",(pid,date,'MACHINERY','OUT',tid,f'Machinery transfer OUT: {m["machine_type"]} · {m["code"]} to project {to_pid}',me['id']))
+                mid=int(request.form["machine_id"]); m=c.execute("SELECT id FROM machines WHERE id=? AND project_id=? AND active=1",(mid,pid)).fetchone()
+                if not m: raise ValueError('Machine is not available in the source project fleet.')
+                cur=c.execute("INSERT INTO machine_transfers(from_project_id,to_project_id,machine_id,date,notes,status,sent_by) VALUES(?,?,?,?,?,?,?)",(pid,to_pid,mid,date,notes,'PENDING_APPROVAL',me['id'])); tid=cur.lastrowid; kind='machine'
             elif action=="manpower":
                 name=request.form.get('name','').strip(); employment=request.form.get('employment','Temporary'); position=request.form.get('position','Other'); wh=parse_float(request.form.get('working_hours',8)); hr=parse_float(request.form.get('hourly_rate')); dr=parse_float(request.form.get('daily_rate'))
                 if not name: raise ValueError('Manpower name is required.')
-                cur=c.execute("INSERT INTO manpower_transfers(from_project_id,to_project_id,date,name,employment,position,working_hours,hourly_rate,daily_rate,reference,notes,sent_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(pid,to_pid,date,name,employment,position,wh,hr,dr,ref,notes,me['id'])); tid=cur.lastrowid
-                c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,working_hours,hourly_rate,daily_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,date,name,employment,position,0,wh,hr,dr,f'INTER-PROJECT TRANSFER OUT to project {to_pid}'+(f' · {notes}' if notes else ''),me['id']))
-                c.execute("INSERT INTO daily_transfer_logs(project_id,date,transfer_type,direction,transfer_id,description,user_id) VALUES(?,?,?,?,?,?,?)",(pid,date,'MANPOWER','OUT',tid,f'Manpower transfer OUT: {name} · {position} to project {to_pid}',me['id']))
-            c.commit(); flash("🔄 Transfer sent to the receiving project store/team for confirmation.","success")
-        except Exception as e: c.rollback(); flash("Transfer failed: "+str(e),"error")
+                cur=c.execute("INSERT INTO manpower_transfers(from_project_id,to_project_id,date,name,employment,position,working_hours,hourly_rate,daily_rate,reference,notes,status,sent_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(pid,to_pid,date,name,employment,position,wh,hr,dr,ref,notes,'PENDING_APPROVAL',me['id'])); tid=cur.lastrowid; kind='manpower'
+            else: raise ValueError('Invalid transfer type.')
+            _seed_transfer_approval(c,kind,tid,pid)
+            c.commit(); flash("🔄 Transfer request submitted. First approval: Source Project Manager → Head Office functional manager → Delivery → Receiving project personnel.","success")
+        except Exception as e:
+            c.rollback(); flash("Could not create transfer request: "+str(e),"error")
+        finally: c.close()
+        return redirect(url_for("transfers",pid=pid))
     outgoing=c.execute("SELECT mt.*,m.name material_name,m.unit,t.name to_project,fu.full_name sender FROM material_transfers mt JOIN materials m ON m.id=mt.material_id JOIN projects t ON t.id=mt.to_project_id LEFT JOIN users fu ON fu.id=mt.sent_by WHERE mt.from_project_id=? ORDER BY mt.sent_at DESC",(pid,)).fetchall()
     incoming=c.execute("SELECT mt.*,m.name material_name,m.unit,f.name from_project,fu.full_name sender FROM material_transfers mt JOIN materials m ON m.id=mt.material_id JOIN projects f ON f.id=mt.from_project_id LEFT JOIN users fu ON fu.id=mt.sent_by WHERE mt.to_project_id=? ORDER BY mt.sent_at DESC",(pid,)).fetchall()
     fuel_out=c.execute("SELECT ft.*,p.name to_project,fu.full_name sender,m.code,m.machine_type FROM fuel_transfers ft JOIN projects p ON p.id=ft.to_project_id LEFT JOIN users fu ON fu.id=ft.sent_by LEFT JOIN machines m ON m.id=ft.machine_id WHERE ft.from_project_id=? ORDER BY ft.sent_at DESC",(pid,)).fetchall()
@@ -1388,46 +1507,55 @@ def transfers(pid):
     mp_out=c.execute("SELECT mt.*,p.name to_project,fu.full_name sender FROM manpower_transfers mt JOIN projects p ON p.id=mt.to_project_id LEFT JOIN users fu ON fu.id=mt.sent_by WHERE mt.from_project_id=? ORDER BY mt.sent_at DESC",(pid,)).fetchall()
     mp_in=c.execute("SELECT mt.*,p.name from_project,fu.full_name sender FROM manpower_transfers mt JOIN projects p ON p.id=mt.from_project_id LEFT JOIN users fu ON fu.id=mt.sent_by WHERE mt.to_project_id=? ORDER BY mt.sent_at DESC",(pid,)).fetchall()
     mach_in=c.execute("SELECT mt.*,p.name from_project,m.code,m.machine_type FROM machine_transfers mt JOIN projects p ON p.id=mt.from_project_id JOIN machines m ON m.id=mt.machine_id WHERE mt.to_project_id=? ORDER BY mt.sent_at DESC",(pid,)).fetchall()
-    c.close(); return render_template("transfers.html",pid=pid,projects=projects,materials=materials,machines=machines,outgoing=outgoing,incoming=incoming,fuel_out=fuel_out,fuel_in=fuel_in,mach_out=mach_out,mach_in=mach_in,mp_out=mp_out,mp_in=mp_in)
+    approvals=c.execute("SELECT ta.*,u.full_name approver,p.name source_project FROM transfer_approvals ta JOIN users u ON u.id=ta.approver_user_id LEFT JOIN material_transfers mt ON ta.transfer_type='material' AND ta.transfer_id=mt.id LEFT JOIN fuel_transfers ft ON ta.transfer_type='fuel' AND ta.transfer_id=ft.id LEFT JOIN machine_transfers mch ON ta.transfer_type='machine' AND ta.transfer_id=mch.id LEFT JOIN manpower_transfers mp ON ta.transfer_type='manpower' AND ta.transfer_id=mp.id LEFT JOIN projects p ON p.id=COALESCE(mt.from_project_id,ft.from_project_id,mch.from_project_id,mp.from_project_id) WHERE ta.approver_user_id=? AND ta.status='PENDING' ORDER BY ta.created_at DESC",(me['id'],)).fetchall()
+    c.close(); return render_template("transfers.html",pid=pid,projects=projects,materials=materials,machines=machines,outgoing=outgoing,incoming=incoming,fuel_out=fuel_out,fuel_in=fuel_in,mach_out=mach_out,mach_in=mach_in,mp_out=mp_out,mp_in=mp_in,approvals=approvals)
+
+@app.route("/projects/<int:pid>/transfers/<string:kind>/<int:tid>/approve",methods=["POST"])
+@login_required
+def approve_transfer(pid,kind,tid):
+    c=db(); me=current_user()
+    try:
+        step=c.execute("SELECT * FROM transfer_approvals WHERE transfer_type=? AND transfer_id=? AND status='PENDING' ORDER BY step_order LIMIT 1",(kind,tid)).fetchone()
+        if not step or step['approver_user_id']!=me['id']: raise ValueError('This transfer is not waiting for your approval.')
+        c.execute("UPDATE transfer_approvals SET status='APPROVED',action='APPROVE',comments=?,acted_at=? WHERE id=?",(request.form.get('comments',''),dt.datetime.now().isoformat(timespec='seconds'),step['id']))
+        next_step=c.execute("SELECT * FROM transfer_approvals WHERE transfer_type=? AND transfer_id=? AND status='PENDING' ORDER BY step_order LIMIT 1",(kind,tid)).fetchone()
+        if next_step:
+            flash("✅ Approval recorded. The transfer is now waiting for the Head Office functional manager." if step['stage']=='PROJECT_MANAGER' else "✅ Approval recorded. The transfer is approved and will now be delivered.","success")
+            if step['stage']=='HEAD_OFFICE_MANAGER': _mark_transfer_delivered(c,kind,tid,me)
+        c.commit()
+    except Exception as e: c.rollback(); flash('Could not approve transfer: '+str(e),'error')
+    finally: c.close()
+    return redirect(url_for('transfers',pid=pid))
+
+@app.route("/projects/<int:pid>/transfers/<string:kind>/<int:tid>/reject",methods=["POST"])
+@login_required
+def reject_transfer(pid,kind,tid):
+    c=db(); me=current_user()
+    try:
+        step=c.execute("SELECT * FROM transfer_approvals WHERE transfer_type=? AND transfer_id=? AND status='PENDING' ORDER BY step_order LIMIT 1",(kind,tid)).fetchone()
+        if not step or step['approver_user_id']!=me['id']: raise ValueError('This transfer is not waiting for your action.')
+        c.execute("UPDATE transfer_approvals SET status='REJECTED',action='REJECT',comments=?,acted_at=? WHERE id=?",(request.form.get('comments',''),dt.datetime.now().isoformat(timespec='seconds'),step['id']))
+        table={'material':'material_transfers','fuel':'fuel_transfers','machine':'machine_transfers','manpower':'manpower_transfers'}[kind]
+        c.execute(f"UPDATE {table} SET status='REJECTED' WHERE id=?",(tid,))
+        c.commit(); flash('❌ Transfer rejected. Nothing was delivered or deducted from the source register.','success')
+    except Exception as e: c.rollback(); flash('Could not reject transfer: '+str(e),'error')
+    finally: c.close()
+    return redirect(url_for('transfers',pid=pid))
 
 @app.route("/projects/<int:pid>/transfers/<string:kind>/<int:tid>/receive",methods=["POST"])
 @login_required
 def receive_transfer(pid,kind,tid):
     if not allowed_project(pid): return redirect(url_for("dashboard"))
-    c=db(); me=current_user(); table={'material':'material_transfers','fuel':'fuel_transfers','machine':'machine_transfers','manpower':'manpower_transfers'}.get(kind)
-    if not table: c.close(); return ("Invalid transfer",400)
-    required={'material':'Store','fuel':'Machinery','machine':'Machinery','manpower':'HR'}[kind]
-    if me['role']!='SUPER_ADMIN' and me['department'] not in (required,'Project'):
-        c.close(); flash(f"🚫 Only {required} / Project personnel can receive this transfer.","error"); return redirect(url_for("transfers",pid=pid))
-    now=dt.datetime.now().isoformat(timespec="seconds")
-    row=c.execute(f"SELECT * FROM {table} WHERE id=? AND to_project_id=? AND status='SENT'",(tid,pid)).fetchone()
-    if not row: c.close(); flash("Transfer not found, already received, or not addressed to this project.","error"); return redirect(url_for("transfers",pid=pid))
-    c.execute(f"UPDATE {table} SET status='RECEIVED',received_by=?,received_at=? WHERE id=?",(me["id"],now,tid))
-    if kind=='material':
-        src=c.execute("SELECT * FROM materials WHERE id=?",(row['material_id'],)).fetchone()
-        if src:
-            target=c.execute("SELECT id FROM materials WHERE project_id=? AND name=?",(pid,src['name'])).fetchone()
-            if not target:
-                c.execute("INSERT INTO materials(project_id,category,name,unit,min_stock) VALUES(?,?,?,?,?)",(pid,src['category'],src['name'],src['unit'],src['min_stock'])); target=c.execute("SELECT last_insert_rowid() id").fetchone()
-            c.execute("INSERT INTO store_logs(project_id,material_id,date,received,issued,unit_cost,reference,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?)",(pid,target['id'],row['date'],row['quantity'],0,row['unit_cost'],row['reference'] or f'Transfer from project {row["from_project_id"]}',row['notes'] or 'Inter-project material transfer received',me['id']))
-    elif kind=='fuel':
-        machine_id=row['machine_id']
-        if not machine_id:
-            machine=c.execute("SELECT id FROM machines WHERE project_id=? AND active=1 ORDER BY id LIMIT 1",(pid,)).fetchone()
-            machine_id=machine['id'] if machine else None
-        if not machine_id: raise ValueError('Fuel receipt needs a machine or an active machine in the receiving project.')
-        price=row['unit_cost'] or 0
-        c.execute("INSERT INTO fuel_logs(project_id,machine_id,date,opening_gauge,fuel_received,closing_gauge,fuel_price,reference,notes,user_id,source,transfer_out) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(pid,machine_id,row['date'],0,row['litres'],row['litres'],price,row['reference'] or f'Transfer from project {row["from_project_id"]}',row['notes'] or 'Inter-project fuel transfer received',me['id'],'Inter-project Transfer IN',0))
-        c.execute("INSERT INTO daily_transfer_logs(project_id,date,transfer_type,direction,transfer_id,description,user_id) VALUES(?,?,?,?,?,?,?)",(pid,row['date'],'FUEL','IN',tid,f'Fuel transfer IN: {row["litres"]:g} L from project {row["from_project_id"]}',me['id']))
-    elif kind=='machine':
-        c.execute("UPDATE machines SET project_id=?,active=1 WHERE id=?",(pid,row['machine_id']))
-        m=c.execute("SELECT machine_type,code FROM machines WHERE id=?",(row['machine_id'],)).fetchone()
-        c.execute("INSERT INTO machine_logs(project_id,machine_id,date,notes,user_id) VALUES(?,?,?,?,?)",(pid,row['machine_id'],row['date'],f'INTER-PROJECT TRANSFER IN from project {row["from_project_id"]}'+(f' · {row["notes"]}' if row['notes'] else ''),me['id']))
-        c.execute("INSERT INTO daily_transfer_logs(project_id,date,transfer_type,direction,transfer_id,description,user_id) VALUES(?,?,?,?,?,?,?)",(pid,row['date'],'MACHINERY','IN',tid,f'Machinery transfer IN: {m["machine_type"]} · {m["code"]} from project {row["from_project_id"]}',me['id']))
-    elif kind=='manpower':
-        c.execute("INSERT INTO manpower(project_id,date,name,employment,position,present,working_hours,hourly_rate,daily_rate,notes,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(pid,row['date'],row['name'],row['employment'],row['position'],1,row['working_hours'],row['hourly_rate'],row['daily_rate'],f'INTER-PROJECT TRANSFER IN from project {row["from_project_id"]}'+(f' · {row["notes"]}' if row['notes'] else ''),me['id']))
-        c.execute("INSERT INTO daily_transfer_logs(project_id,date,transfer_type,direction,transfer_id,description,user_id) VALUES(?,?,?,?,?,?,?)",(pid,row['date'],'MANPOWER','IN',tid,f'Manpower transfer IN: {row["name"]} · {row["position"]} from project {row["from_project_id"]}',me['id']))
-    c.commit(); c.close(); flash("📥 Transfer received and registered in its project register and Daily Report.","success"); return redirect(url_for("transfers",pid=pid))
+    c=db(); me=current_user()
+    try:
+        required={'material':'Store','fuel':'Machinery','machine':'Machinery','manpower':'HR'}[kind]
+        if me['role']!='SUPER_ADMIN' and me['department'] not in (required,'Project'):
+            raise ValueError(f"Only {required} / Project personnel can receive this transfer.")
+        _receive_transfer_post(c,kind,tid,pid,me)
+        c.commit(); flash("📥 Transfer received and registered in its own register and Daily Report.","success")
+    except Exception as e: c.rollback(); flash('Could not receive transfer: '+str(e),'error')
+    finally: c.close()
+    return redirect(url_for('transfers',pid=pid))
 
 @app.route("/projects/<int:pid>/expenses/claim",methods=["GET","POST"])
 @login_required
