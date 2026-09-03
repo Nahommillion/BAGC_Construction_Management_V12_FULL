@@ -1,33 +1,25 @@
-# BAGC Construction Management V26
+# BAGC Construction Management V28
 
-Multi-project construction management system with strict department/project visibility and hierarchy-driven workflows.
+V28 adds strict separation between Head Office personnel and Project Team personnel, cross-project Head Office responsibility, filtered department reports, and multi-person responsibility/contact selection.
 
-## V26 additions
-- Department/team/project visibility filtering.
-- Head Office and Project responsibility register.
-- Super Admin assignment of department/team, position, project position and reporting lines.
-- Controlled recipient filtering for company workflow correspondence.
-- Resource Requests for Material, Fuel, Machinery, Manpower, Expense, Design, Procurement and Other.
-- Hierarchy-based approval: Project requests route to the project reporting chain; Head Office requests route to Head Office reporting chain.
-- Approved requests automatically register into Store, Fuel, Machinery, Manpower, Finance or Design where applicable.
-- Request attachments and permanent registration references.
-- Department-filtered dashboard KPIs and request status chart.
-- Inter-project material transfer deducts source stock and receiving confirmation registers the material at the destination.
-- Existing consultant/company-paid expense, workflow files, fuel, machinery and project reporting features retained.
+## V28 highlights
+- Head Office accounts and Project Personnel accounts are separate using `personnel_scope`.
+- Head Office personnel are never added to the Project Team register.
+- A Head Office employee can be assigned functional responsibility for any number of projects without becoming project staff.
+- Project Team responsibility and Head Office responsibility have separate multi-select boxes with no 5/10-person limit.
+- Head Office responsibility gives project access for the assigned project/function while preserving Head Office identity.
+- Workflow contacts include relevant project responsibility contacts.
+- Machinery/Fuel personnel can only access Machinery and Fuel reports.
+- Store personnel can only access Store reports.
+- HR personnel can only access Manpower reports.
+- Finance personnel can only access Finance reports.
+- Design personnel can only access Design reports.
+- Project Manager has full reporting access within assigned projects.
+- Saved reports are also filtered and protected by the same report permissions.
+- Project Manager remains the project administrator for assigned projects.
+- Existing V27 request approval, Head Office routing, forwarding, resource registration, Excel imports and other features are retained.
 
-## Run locally
-`pip install -r requirements.txt`
-`python app.py`
-
-## Render
-Start command: `gunicorn app:app`
-Configure `BAGC_DATA_DIR` to a persistent disk or use an external database for permanent production data.
-
-## V27 additions
-- Project Manager can administer all modules inside assigned projects, including BOQ, daily reporting, machinery, fuel, manpower, store, finance, design, reports and project requests.
-- Project resource requests now use a project approval chain: Office Engineer -> Office Head -> Project Manager.
-- After project-side approval, the Project Manager explicitly routes the request to Head Office by selecting Department -> Team -> Responsible Person.
-- Head Office recipients can approve, reject, or forward requests to another Head Office person; the full request route is preserved in `request_steps`.
-- Final approval automatically registers the approved resource in the appropriate project register (Store, Fuel, Machinery, Manpower, Finance or Design).
-- Projects support unlimited responsible personnel by responsibility area, including Head Office personnel who can be responsible for multiple projects.
-- Optional Excel import added for project manpower and machinery registers. Manual entry remains available.
+## Deployment
+- Start command: `gunicorn app:app`
+- Requirements: Flask, openpyxl, Werkzeug, gunicorn.
+- For persistent Render data, configure `BAGC_DATA_DIR` on a persistent disk or use PostgreSQL.

@@ -87,6 +87,8 @@ MODULE_DEPARTMENTS={
     "Administration":"Administration", "Design":"Design", "Machinery":"Machinery",
     "Finance":"Finance", "HR":"HR", "Store":"Store", "Project":"Project", "Consultant":"Consultant"
 }
+PERSONNEL_SCOPES=["HEAD_OFFICE","PROJECT"]
+REPORT_SCOPES_BY_DEPARTMENT={"Machinery":{"MACHINERY","FUEL"},"Store":{"STORE"},"HR":{"MANPOWER"},"Finance":{"FINANCE"},"Design":{"DESIGN"},"Project":{"BOQ","PROBLEMS"},"Administration":{"FINANCE"},"Consultant":{"BOQ","PROBLEMS"}}
 REQUEST_TYPES=["MATERIAL","FUEL","MACHINERY","MANPOWER","EXPENSE","DESIGN","PROCUREMENT","OTHER"]
 REQUEST_CATEGORIES={
     "MATERIAL":"Store / Material", "FUEL":"Fuel", "MACHINERY":"Machinery", "MANPOWER":"Manpower / HR",
@@ -123,7 +125,7 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     c.executescript('''
-    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,position TEXT,location TEXT,phone TEXT,email TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,photo_filename TEXT,last_login TEXT,org_unit_id INTEGER,reports_to_user_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,full_name TEXT,username TEXT UNIQUE,password_hash TEXT,department TEXT,position TEXT,location TEXT,phone TEXT,email TEXT,role TEXT,active INTEGER DEFAULT 1,staff_id TEXT UNIQUE,photo_filename TEXT,last_login TEXT,org_unit_id INTEGER,reports_to_user_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP,personnel_scope TEXT DEFAULT 'PROJECT');
     CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,name TEXT UNIQUE,code TEXT,location TEXT,client TEXT,consultant TEXT,status TEXT DEFAULT 'Active',start_date TEXT,end_date TEXT);
     CREATE TABLE IF NOT EXISTS org_units(id INTEGER PRIMARY KEY,name TEXT UNIQUE,parent_id INTEGER,unit_type TEXT DEFAULT 'Team',active INTEGER DEFAULT 1,manager_user_id INTEGER,sort_order INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS user_projects(user_id INTEGER,project_id INTEGER,UNIQUE(user_id,project_id));
@@ -170,6 +172,12 @@ def init_db():
     CREATE TABLE IF NOT EXISTS request_steps(id INTEGER PRIMARY KEY,request_id INTEGER,step_order INTEGER,stage TEXT,assigned_user_id INTEGER,to_org_unit_id INTEGER,department TEXT,status TEXT DEFAULT 'PENDING',action TEXT,comments TEXT,acted_at TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(request_id,step_order));
     CREATE TABLE IF NOT EXISTS project_responsibilities(id INTEGER PRIMARY KEY,project_id INTEGER,user_id INTEGER,responsibility_area TEXT DEFAULT 'General Project',source TEXT DEFAULT 'Manual',assigned_by INTEGER,active INTEGER DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(project_id,user_id,responsibility_area));
     ''')
+    existing_users=[r['name'] for r in c.execute("PRAGMA table_info(users)").fetchall()]
+    if 'personnel_scope' not in existing_users: c.execute("ALTER TABLE users ADD COLUMN personnel_scope TEXT DEFAULT 'PROJECT'")
+    # Existing accounts are classified from their Head Office assignment; project-only accounts remain project personnel.
+    c.execute("UPDATE users SET personnel_scope='HEAD_OFFICE' WHERE org_unit_id IS NOT NULL AND (personnel_scope IS NULL OR personnel_scope='PROJECT')")
+    c.execute("UPDATE project_assignments SET active=0 WHERE user_id IN (SELECT id FROM users WHERE personnel_scope='HEAD_OFFICE')")
+    c.execute("DELETE FROM user_projects WHERE user_id IN (SELECT id FROM users WHERE personnel_scope='HEAD_OFFICE')")
     existing_rr=[r['name'] for r in c.execute("PRAGMA table_info(resource_requests)").fetchall()]
     for col,typ in [('current_stage',"TEXT DEFAULT 'PROJECT'"),('origin_scope',"TEXT DEFAULT 'PROJECT'"),('head_office_sent_at','TEXT'),('finalized_at','TEXT')]:
         if col not in existing_rr: c.execute(f"ALTER TABLE resource_requests ADD COLUMN {col} {typ}")
@@ -285,7 +293,11 @@ def allowed_project(pid):
     u=current_user()
     if not u:return False
     if u["role"]=="SUPER_ADMIN":return True
-    c=db();ok=c.execute("SELECT 1 FROM user_projects WHERE user_id=? AND project_id=?",(u["id"],pid)).fetchone();c.close();return bool(ok)
+    c=db()
+    ok=c.execute("SELECT 1 FROM user_projects WHERE user_id=? AND project_id=?",(u["id"],pid)).fetchone()
+    if not ok and (u["personnel_scope"] or "PROJECT")=="HEAD_OFFICE":
+        ok=c.execute("SELECT 1 FROM project_responsibilities WHERE user_id=? AND project_id=? AND active=1",(u["id"],pid)).fetchone()
+    c.close(); return bool(ok)
 
 
 def project_admin(pid):
@@ -373,6 +385,12 @@ def report_dates(report_type, start, end):
     if report_type=='ANNUAL': return dt.date(today.year,1,1),dt.date(today.year,12,31)
     return today,today
 
+def allowed_report_scopes_for_user(pid=None):
+    u=current_user()
+    if not u: return set()
+    if u["role"]=="SUPER_ADMIN" or (pid is not None and project_admin(pid)): return {"ALL","BOQ","MACHINERY","MANPOWER","STORE","FUEL","FINANCE","PROBLEMS","DESIGN"}
+    return set(REPORT_SCOPES_BY_DEPARTMENT.get(u["department"],set()))
+
 def build_report_snapshot(pid,start,end,scope='ALL'):
     c=db(); out={'project_id':pid,'start_date':start.isoformat(),'end_date':end.isoformat(),'scope':scope}
     if scope in ('ALL','BOQ'):
@@ -386,6 +404,8 @@ def build_report_snapshot(pid,start,end,scope='ALL'):
         out['store']=[dict(r) for r in c.execute("SELECT sl.*,m.name,m.category,m.unit FROM store_logs sl JOIN materials m ON m.id=sl.material_id WHERE sl.project_id=? AND sl.date BETWEEN ? AND ? ORDER BY sl.date,sl.id",(pid,start.isoformat(),end.isoformat())).fetchall()]
     if scope in ('ALL','FUEL'):
         out['fuel']=[dict(r) for r in c.execute("SELECT f.*,m.machine_type,m.code,m.plate_no,m.engine_no,m.ownership,m.expected_fuel,COALESCE((SELECT SUM(ml.work_hours) FROM machine_logs ml WHERE ml.machine_id=f.machine_id AND ml.date=f.date),0) work_hours,(f.opening_gauge+f.fuel_received-f.closing_gauge) consumption,(f.fuel_received*f.fuel_price) cost FROM fuel_logs f JOIN machines m ON m.id=f.machine_id WHERE f.project_id=? AND f.date BETWEEN ? AND ? ORDER BY f.date,f.id",(pid,start.isoformat(),end.isoformat())).fetchall()]
+    if scope in ('ALL','DESIGN'):
+        out['design']=[dict(r) for r in c.execute("SELECT * FROM design_items WHERE project_id=? AND (submitted IS NULL OR submitted BETWEEN ? AND ?) ORDER BY id DESC",(pid,start.isoformat(),end.isoformat())).fetchall()]
     if scope in ('ALL','FINANCE'):
         out['finance']=[dict(r) for r in c.execute("SELECT * FROM finance_logs WHERE project_id=? AND date BETWEEN ? AND ? ORDER BY date,id",(pid,start.isoformat(),end.isoformat())).fetchall()]
     if scope in ('ALL','PROBLEMS'):
@@ -953,21 +973,29 @@ def reports(pid):
     if not allowed_project(pid): return redirect(url_for("dashboard"))
     report_type=request.args.get('report_type','MONTHLY').upper()
     scope=request.args.get('scope','ALL').upper()
+    allowed_scopes=allowed_report_scopes_for_user(pid)
+    if scope not in allowed_scopes:
+        scope='MACHINERY' if 'MACHINERY' in allowed_scopes else ('FUEL' if 'FUEL' in allowed_scopes else (next(iter(sorted(allowed_scopes))) if allowed_scopes else 'BOQ'))
+        flash('📊 You can only view reports belonging to your assigned department/project responsibility.','error')
     start_s=request.args.get('start',''); end_s=request.args.get('end','')
     try: start,end=report_dates(report_type,start_s,end_s)
     except Exception: start,end=report_dates(report_type,'','')
     c=db(); p=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone()
-    saved=c.execute("SELECT sr.*,u.full_name generated_name FROM saved_reports sr LEFT JOIN users u ON u.id=sr.generated_by WHERE sr.project_id=? ORDER BY sr.generated_at DESC,sr.id DESC LIMIT 50",(pid,)).fetchall(); c.close()
+    saved_all=c.execute("SELECT sr.*,u.full_name generated_name FROM saved_reports sr LEFT JOIN users u ON u.id=sr.generated_by WHERE sr.project_id=? ORDER BY sr.generated_at DESC,sr.id DESC LIMIT 100",(pid,)).fetchall()
+    saved=[r for r in saved_all if r['scope'] in allowed_scopes]
+    c.close()
     snapshot=build_report_snapshot(pid,start,end,scope)
     if request.args.get('save')=='1':
         rid=save_report(pid,report_type,start,end,scope,current_user()['id']); flash(f'📚 {report_type} report saved as a permanent report record.','success'); return redirect(url_for('reports',pid=pid,report_type=report_type,scope=scope,start=start.isoformat(),end=end.isoformat()))
-    return render_template('reports.html',pid=pid,p=p,report_type=report_type,scope=scope,start=start,end=end,snapshot=snapshot,saved=saved)
+    return render_template('reports.html',pid=pid,p=p,report_type=report_type,scope=scope,start=start,end=end,snapshot=snapshot,saved=saved,allowed_report_scopes=allowed_scopes)
 
 @app.route("/projects/<int:pid>/reports/save",methods=['POST'])
 @login_required
 def save_report_route(pid):
     if not allowed_project(pid): return redirect(url_for('dashboard'))
     rt=request.form.get('report_type','MONTHLY').upper(); scope=request.form.get('scope','ALL').upper()
+    if scope not in allowed_report_scopes_for_user(pid):
+        flash('🚫 You are not allowed to save this report section.','error'); return redirect(url_for('reports',pid=pid))
     start=dt.date.fromisoformat(request.form['start']); end=dt.date.fromisoformat(request.form['end'])
     rid=save_report(pid,rt,start,end,scope,current_user()['id']); flash(f'📚 Report saved permanently (Record #{rid}).','success')
     return redirect(url_for('reports',pid=pid,report_type=rt,scope=scope,start=start.isoformat(),end=end.isoformat()))
@@ -978,6 +1006,7 @@ def saved_report(pid,rid):
     if not allowed_project(pid): return redirect(url_for('dashboard'))
     c=db(); r=c.execute("SELECT sr.*,p.name project_name,p.client,p.consultant,p.contractor_role,u.full_name generated_name FROM saved_reports sr JOIN projects p ON p.id=sr.project_id LEFT JOIN users u ON u.id=sr.generated_by WHERE sr.id=? AND sr.project_id=?",(rid,pid)).fetchone()
     if not r: c.close(); return ('Report not found',404)
+    if r['scope'] not in allowed_report_scopes_for_user(pid): c.close(); return ('Report access denied',403)
     source_ids=json.loads(r['source_report_ids'] or '[]'); sources=[]
     if source_ids:
         marks=','.join('?'*len(source_ids)); sources=c.execute(f"SELECT id,report_no,report_type,scope,start_date,end_date FROM saved_reports WHERE id IN ({marks}) ORDER BY start_date",source_ids).fetchall()
@@ -1047,6 +1076,8 @@ def assign_project_role(uid):
     try:
         pid=int(request.form["project_id"]); position=request.form.get("project_position","").strip(); manager=request.form.get("project_manager_id") or None
         c.execute("INSERT INTO user_projects(user_id,project_id) VALUES(?,?) ON CONFLICT(user_id,project_id) DO NOTHING",(uid,pid))
+        userrow=c.execute("SELECT personnel_scope FROM users WHERE id=?",(uid,)).fetchone()
+        if userrow and userrow['personnel_scope']!='PROJECT': raise ValueError('Head Office personnel cannot be added as Project Team personnel. Assign them as Head Office responsible personnel instead.')
         c.execute("INSERT INTO project_assignments(user_id,project_id,position,manager_user_id,active) VALUES(?,?,?,?,1) ON CONFLICT(user_id,project_id) DO UPDATE SET position=excluded.position,manager_user_id=excluded.manager_user_id,active=1",(uid,pid,position,manager))
         c.execute("DELETE FROM responsibilities WHERE subordinate_user_id=? AND scope_type='PROJECT' AND project_id=?",(uid,pid))
         if manager: c.execute("INSERT OR IGNORE INTO responsibilities(supervisor_user_id,subordinate_user_id,scope_type,project_id,source) VALUES(?,?,?,?,?)",(manager,uid,'PROJECT',pid,'Project Assignment'))
@@ -1065,10 +1096,13 @@ def remove_project_assignment(uid,aid):
 def project_team(pid):
     if not allowed_project(pid): return redirect(url_for("dashboard"))
     c=db(); p=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone()
-    rows=c.execute("SELECT pa.*,u.full_name,u.staff_id,u.department,u.phone,u.email,u.org_unit_id,ou.name org_unit_name,m.full_name manager_name FROM project_assignments pa JOIN users u ON u.id=pa.user_id LEFT JOIN org_units ou ON ou.id=u.org_unit_id LEFT JOIN users m ON m.id=pa.manager_user_id WHERE pa.project_id=? AND pa.active=1 AND u.active=1 ORDER BY u.full_name",(pid,)).fetchall()
-    all_users=c.execute("SELECT u.id,u.full_name,u.department,u.position,o.name org_unit_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id WHERE u.active=1 ORDER BY u.full_name").fetchall()
-    responsible_ids={r['user_id'] for r in c.execute("SELECT user_id FROM project_responsibilities WHERE project_id=? AND responsibility_area='General Project' AND active=1",(pid,)).fetchall()}
-    c.close(); return render_template("project_team.html",pid=pid,p=p,rows=rows,all_users=all_users,responsible_ids=responsible_ids)
+    rows=c.execute("SELECT pa.*,u.full_name,u.staff_id,u.department,u.phone,u.email,u.org_unit_id,u.personnel_scope,ou.name org_unit_name,m.full_name manager_name FROM project_assignments pa JOIN users u ON u.id=pa.user_id LEFT JOIN org_units ou ON ou.id=u.org_unit_id LEFT JOIN users m ON m.id=pa.manager_user_id WHERE pa.project_id=? AND pa.active=1 AND u.active=1 ORDER BY u.full_name",(pid,)).fetchall()
+    project_users=c.execute("SELECT u.id,u.full_name,u.department,u.position,o.name org_unit_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id WHERE u.active=1 AND u.personnel_scope='PROJECT' ORDER BY u.full_name").fetchall()
+    head_users=c.execute("SELECT u.id,u.full_name,u.department,u.position,o.name org_unit_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id WHERE u.active=1 AND u.personnel_scope='HEAD_OFFICE' ORDER BY u.full_name").fetchall()
+    responsibility_map={}
+    for area in ['General Project','Store','Machinery','Fuel','Manpower / HR','Finance','Design','Procurement','Project Management','HSE / Safety','QA/QC','Survey','Contract Administration']:
+        responsibility_map[area]={r['user_id'] for r in c.execute("SELECT user_id FROM project_responsibilities WHERE project_id=? AND responsibility_area=? AND active=1",(pid,area)).fetchall()}
+    c.close(); return render_template("project_team.html",pid=pid,p=p,rows=rows,project_users=project_users,head_users=head_users,responsibility_map=responsibility_map)
 
 def _request_scope_allowed(pid=None):
     me=current_user()
@@ -1213,11 +1247,12 @@ def resource_request_file(filename):
 @app.route('/responsibilities')
 @login_required
 def responsibilities():
-    me=current_user(); c=db();
+    me=current_user(); c=db()
     head=responsibility_users(me['id'],'HEAD_OFFICE')
     project=responsibility_users(me['id'],'PROJECT')
+    project_function=c.execute("SELECT pr.*,p.name project_name,u.full_name,u.staff_id,u.department,u.position FROM project_responsibilities pr JOIN projects p ON p.id=pr.project_id JOIN users u ON u.id=pr.user_id WHERE pr.user_id=? AND pr.active=1 ORDER BY p.name,pr.responsibility_area,u.full_name",(me['id'],)).fetchall()
     my_projects=c.execute("SELECT pa.*,p.name project_name FROM project_assignments pa JOIN projects p ON p.id=pa.project_id WHERE pa.user_id=? AND pa.active=1 ORDER BY p.name",(me['id'],)).fetchall()
-    c.close(); return render_template('responsibilities.html',head=head,project=project,my_projects=my_projects)
+    c.close(); return render_template('responsibilities.html',head=head,project=project,project_function=project_function,my_projects=my_projects)
 
 
 def visible_workflow_contacts(c, me):
@@ -1231,6 +1266,8 @@ def visible_workflow_contacts(c, me):
     if me['org_unit_id']:
         for r in c.execute("SELECT id FROM users WHERE active=1 AND org_unit_id=?",(me['org_unit_id'],)).fetchall(): ids.add(r['id'])
     for r in c.execute("SELECT DISTINCT up2.user_id FROM user_projects up1 JOIN user_projects up2 ON up2.project_id=up1.project_id WHERE up1.user_id=? AND up2.user_id<>?",(me['id'],me['id'])).fetchall(): ids.add(r['user_id'])
+    # Project responsibility contacts include Head Office supervisors assigned to this project.
+    for r in c.execute("SELECT DISTINCT pr.user_id FROM project_responsibilities pr WHERE pr.project_id IN (SELECT project_id FROM user_projects WHERE user_id=? UNION SELECT project_id FROM project_responsibilities WHERE user_id=?) AND pr.active=1",(me['id'],me['id'])).fetchall(): ids.add(r['user_id'])
     if ids:
         ph=','.join('?'*len(ids)); users=c.execute(f"SELECT id,full_name,department,position,org_unit_id FROM users WHERE active=1 AND id IN ({ph}) ORDER BY full_name",tuple(ids)).fetchall()
     else: users=[]
@@ -1421,7 +1458,7 @@ def edit_org_unit(oid):
 def assign_head_office_staff(uid):
     c=db()
     try:
-        c.execute("UPDATE users SET org_unit_id=?,reports_to_user_id=? WHERE id=?",(request.form.get("org_unit_id") or None,request.form.get("reports_to_user_id") or None,uid)); c.execute("DELETE FROM responsibilities WHERE subordinate_user_id=? AND scope_type='HEAD_OFFICE'",(uid,)); mgr=request.form.get("reports_to_user_id") or None;
+        c.execute("UPDATE users SET personnel_scope='HEAD_OFFICE',org_unit_id=?,reports_to_user_id=? WHERE id=?",(request.form.get('org_unit_id') or None,request.form.get('reports_to_user_id') or None,uid)); c.execute("UPDATE project_assignments SET active=0 WHERE user_id=?",(uid,)); c.execute("DELETE FROM user_projects WHERE user_id=?",(uid,)); c.execute("DELETE FROM responsibilities WHERE subordinate_user_id=? AND scope_type='HEAD_OFFICE'",(uid,)); mgr=request.form.get("reports_to_user_id") or None;
         if mgr: c.execute("INSERT OR IGNORE INTO responsibilities(supervisor_user_id,subordinate_user_id,scope_type,project_id,source) VALUES(?,?,?,NULL,?)",(mgr,uid,'HEAD_OFFICE','Head Office Hierarchy')); c.commit(); flash("👤 Staff hierarchy updated.","success")
     except Exception as e: c.rollback(); flash("Could not update staff hierarchy: "+str(e),"error")
     c.close(); return redirect(url_for("head_office"))
@@ -1432,7 +1469,7 @@ def users():
     c=db(); users=c.execute("SELECT u.*,o.name org_unit_name FROM users u LEFT JOIN org_units o ON o.id=u.org_unit_id ORDER BY u.full_name").fetchall(); projects=c.execute("SELECT * FROM projects ORDER BY name").fetchall(); units=c.execute("SELECT * FROM org_units WHERE active=1 ORDER BY sort_order,name").fetchall()
     assign={u["id"]:[r["project_id"] for r in c.execute("SELECT project_id FROM user_projects WHERE user_id=?",(u["id"],)).fetchall()] for u in users}
     project_assignments={u["id"]:[dict(r) for r in c.execute("SELECT pa.*,p.name project_name,m.full_name manager_name FROM project_assignments pa JOIN projects p ON p.id=pa.project_id LEFT JOIN users m ON m.id=pa.manager_user_id WHERE pa.user_id=? AND pa.active=1 ORDER BY p.name",(u["id"],)).fetchall()] for u in users}
-    responsibility_counts={u["id"]:{"head":c.execute("SELECT COUNT(*) n FROM responsibilities WHERE supervisor_user_id=? AND scope_type='HEAD_OFFICE' AND active=1",(u["id"],)).fetchone()["n"],"project":c.execute("SELECT COUNT(*) n FROM responsibilities WHERE supervisor_user_id=? AND scope_type='PROJECT' AND active=1",(u["id"],)).fetchone()["n"]} for u in users}
+    responsibility_counts={u['id']:{'head':c.execute("SELECT COUNT(*) n FROM responsibilities WHERE supervisor_user_id=? AND scope_type='HEAD_OFFICE' AND active=1",(u['id'],)).fetchone()['n'],'project':c.execute("SELECT COUNT(*) n FROM responsibilities WHERE supervisor_user_id=? AND scope_type='PROJECT' AND active=1",(u['id'],)).fetchone()['n']+c.execute("SELECT COUNT(*) n FROM project_responsibilities WHERE user_id=? AND active=1",(u['id'],)).fetchone()['n']} for u in users}
     responsibility_people={}
     for u in users:
         responsibility_people[u["id"]]=c.execute("SELECT r.scope_type,u.full_name,p.name project_name FROM responsibilities r JOIN users u ON u.id=r.subordinate_user_id LEFT JOIN projects p ON p.id=r.project_id WHERE r.supervisor_user_id=? AND r.active=1 ORDER BY r.scope_type,p.name,u.full_name",(u["id"],)).fetchall()
@@ -1453,18 +1490,23 @@ def add_user():
         ext=secure_filename(photo.filename).rsplit('.',1)[-1].lower() if '.' in photo.filename else ''
         if ext not in ALLOWED_PHOTO_EXT: raise ValueError("Photo must be JPG, JPEG, PNG or WEBP.")
         role=request.form.get("role") if request.form.get("role") in ("STAFF","CONSULTANT","SUPER_ADMIN") else "STAFF"
-        vals=(request.form["full_name"].strip(),request.form["username"].strip(),generate_password_hash(request.form["password"]),request.form["department"],request.form.get("position","Other"),request.form.get("location","").strip(),request.form.get("phone","").strip(),request.form.get("email","").strip(),role,request.form.get("org_unit_id") or None,request.form.get("reports_to_user_id") or None)
+        scope=request.form.get('personnel_scope','PROJECT') if request.form.get('personnel_scope') in PERSONNEL_SCOPES else 'PROJECT'
+        org_id=request.form.get('org_unit_id') or None
+        if scope=='HEAD_OFFICE' and not org_id: raise ValueError('Head Office personnel must be assigned to a Head Office department/team.')
+        if scope=='PROJECT': org_id=None
+        vals=(request.form['full_name'].strip(),request.form['username'].strip(),generate_password_hash(request.form['password']),request.form['department'],request.form.get('position','Other'),request.form.get('location','').strip(),request.form.get('phone','').strip(),request.form.get('email','').strip(),role,org_id,request.form.get('reports_to_user_id') or None,scope)
         for attempt in range(5):
             try:
-                c.execute("INSERT INTO users(full_name,username,password_hash,department,position,location,phone,email,role,org_unit_id,reports_to_user_id,photo_filename) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",vals+ (None,))
+                c.execute("INSERT INTO users(full_name,username,password_hash,department,position,location,phone,email,role,org_unit_id,reports_to_user_id,personnel_scope,photo_filename) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",vals+ (None,))
                 uid=c.execute("SELECT id FROM users WHERE username=?",(request.form["username"].strip(),)).fetchone()["id"]
                 staff_id=make_staff_id(request.form["department"],uid)
                 filename=f"{staff_id}_{uid}.{ext}"
                 photo_path=os.path.join(USER_PHOTOS,filename)
                 photo.save(photo_path)
                 c.execute("UPDATE users SET staff_id=?,photo_filename=? WHERE id=?",(staff_id,filename,uid))
-                for pid2 in request.form.getlist("project_ids"):
-                    c.execute("INSERT OR IGNORE INTO user_projects(user_id,project_id) VALUES(?,?)",(uid,pid2))
+                if scope=='PROJECT':
+                    for pid2 in request.form.getlist('project_ids'):
+                        c.execute('INSERT OR IGNORE INTO user_projects(user_id,project_id) VALUES(?,?)',(uid,pid2))
                 c.commit()
                 flash(f"👤 Staff registered permanently: {staff_id}. The account can be disabled later, but it is never deleted.","success")
                 break
@@ -1534,8 +1576,15 @@ def edit_user(uid):
         if not username: raise ValueError("Username is required.")
         clash=c.execute("SELECT id FROM users WHERE username=? AND id<>?",(username,uid)).fetchone()
         if clash: raise ValueError("Username already exists.")
-        c.execute("UPDATE users SET full_name=?,username=?,department=?,position=?,location=?,phone=?,email=?,role=?,org_unit_id=?,reports_to_user_id=? WHERE id=?",(request.form.get("full_name","").strip(),username,request.form.get("department","Project"),request.form.get("position","Other"),request.form.get("location","").strip(),request.form.get("phone","").strip(),request.form.get("email","").strip(),role,request.form.get("org_unit_id") or None,request.form.get("reports_to_user_id") or None,uid))
-        c.commit(); flash("✏️ User profile, department, position and role updated.","success")
+        scope=request.form.get('personnel_scope','PROJECT') if request.form.get('personnel_scope') in PERSONNEL_SCOPES else 'PROJECT'
+        org_id=request.form.get('org_unit_id') or None
+        if scope=='HEAD_OFFICE' and not org_id: raise ValueError('Head Office personnel must have a Head Office department/team.')
+        if scope=='PROJECT': org_id=None
+        c.execute("UPDATE users SET full_name=?,username=?,department=?,position=?,location=?,phone=?,email=?,role=?,org_unit_id=?,reports_to_user_id=?,personnel_scope=? WHERE id=?",(request.form.get('full_name','').strip(),username,request.form.get('department','Project'),request.form.get('position','Other'),request.form.get('location','').strip(),request.form.get('phone','').strip(),request.form.get('email','').strip(),role,org_id,request.form.get('reports_to_user_id') or None,scope,uid))
+        if scope=='HEAD_OFFICE':
+            c.execute('UPDATE project_assignments SET active=0 WHERE user_id=?',(uid,))
+            c.execute('DELETE FROM user_projects WHERE user_id=?',(uid,))
+        c.commit(); flash('✏️ User profile, personnel type, department, position and role updated.','success')
     except Exception as e: c.rollback(); flash("User update failed: "+str(e),"error")
     c.close(); return redirect(url_for("users"))
 
@@ -1743,8 +1792,8 @@ def send_request_head_office(rid):
     if not row or not row['project_id']: c.close(); flash('Project request not found.','error'); return redirect(url_for('resource_requests'))
     if me['role']!='SUPER_ADMIN' and not project_admin(row['project_id']): c.close(); flash('Only the Project Manager can route this request to Head Office.','error'); return redirect(url_for('resource_requests',pid=row['project_id']))
     try:
-        uid=int(request.form.get('head_office_user_id') or 0); target=c.execute("SELECT * FROM users WHERE id=? AND active=1",(uid,)).fetchone()
-        if not target: raise ValueError('Select a Head Office recipient.')
+        uid=int(request.form.get('head_office_user_id') or 0); target=c.execute("SELECT * FROM users WHERE id=? AND active=1 AND personnel_scope='HEAD_OFFICE'",(uid,)).fetchone()
+        if not target: raise ValueError('Select a Head Office recipient. Only Head Office personnel can receive this stage.')
         maxstep=c.execute("SELECT COALESCE(MAX(step_order),0) n FROM request_steps WHERE request_id=?",(rid,)).fetchone()['n']
         c.execute("INSERT INTO request_steps(request_id,step_order,stage,assigned_user_id,to_org_unit_id,department,status,action,comments) VALUES(?,?,?,?,?,?,?,?,?)",(rid,maxstep+1,'HEAD_OFFICE_REVIEW',uid,target['org_unit_id'],target['department'],'PENDING','SENT',request.form.get('comments','Sent by Project Manager')))
         c.execute("UPDATE resource_requests SET next_approver_user_id=?,current_stage='HEAD_OFFICE_REVIEW',status='HEAD_OFFICE_REVIEW',head_office_sent_at=CURRENT_TIMESTAMP WHERE id=?",(uid,rid)); c.commit(); flash(f'📤 {row["request_no"]} sent to {target["full_name"]} in Head Office.','success')
@@ -1757,8 +1806,8 @@ def forward_request_head_office(rid):
     me=current_user(); c=db(); row=c.execute("SELECT * FROM resource_requests WHERE id=?",(rid,)).fetchone()
     if not row or not user_can_approve_request(me,row): c.close(); flash('Only the current Head Office recipient can forward this request.','error'); return redirect(url_for('resource_requests',pid=row['project_id']) if row and row['project_id'] else url_for('resource_requests'))
     try:
-        uid=int(request.form.get('head_office_user_id') or 0); target=c.execute("SELECT * FROM users WHERE id=? AND active=1",(uid,)).fetchone()
-        if not target: raise ValueError('Select another Head Office recipient.')
+        uid=int(request.form.get('head_office_user_id') or 0); target=c.execute("SELECT * FROM users WHERE id=? AND active=1 AND personnel_scope='HEAD_OFFICE'",(uid,)).fetchone()
+        if not target: raise ValueError('Select another Head Office recipient. Only Head Office personnel can receive this stage.')
         maxstep=c.execute("SELECT COALESCE(MAX(step_order),0) n FROM request_steps WHERE request_id=?",(rid,)).fetchone()['n']
         oldstep=current_request_step(c,rid)
         if oldstep: c.execute("UPDATE request_steps SET status='FORWARDED',action='FORWARDED',comments=?,acted_at=CURRENT_TIMESTAMP WHERE id=?",(request.form.get('comments','Forwarded by Head Office'),oldstep['id']))
@@ -1774,11 +1823,16 @@ def update_project_responsibilities(pid):
     if not project_admin(pid): return redirect(url_for('project_team',pid=pid))
     c=db()
     try:
-        selected={int(x) for x in request.form.getlist('responsible_user_ids') if str(x).isdigit()}
+        selected_project={int(x) for x in request.form.getlist('project_responsible_user_ids') if str(x).isdigit()}
+        selected_head={int(x) for x in request.form.getlist('head_office_responsible_user_ids') if str(x).isdigit()}
         area=request.form.get('responsibility_area','General Project') or 'General Project'
+        selected=selected_project|selected_head
         c.execute("UPDATE project_responsibilities SET active=0 WHERE project_id=? AND responsibility_area=?",(pid,area))
-        for uid in selected:
-            c.execute("INSERT INTO project_responsibilities(project_id,user_id,responsibility_area,source,assigned_by,active) VALUES(?,?,?,?,?,1) ON CONFLICT(project_id,user_id,responsibility_area) DO UPDATE SET active=1,source=excluded.source,assigned_by=excluded.assigned_by",(pid,uid,area,'Project Admin',me['id']))
+        if selected:
+            marks=','.join('?'*len(selected)); valid=c.execute(f"SELECT id,personnel_scope FROM users WHERE active=1 AND id IN ({marks})",tuple(selected)).fetchall()
+        else: valid=[]
+        for usr in valid:
+            c.execute("INSERT INTO project_responsibilities(project_id,user_id,responsibility_area,source,assigned_by,active) VALUES(?,?,?,?,?,1) ON CONFLICT(project_id,user_id,responsibility_area) DO UPDATE SET active=1,source=excluded.source,assigned_by=excluded.assigned_by",(pid,usr['id'],area,'Project Admin',me['id']))
         c.commit(); flash(f'👥 {area} responsibility list updated.','success')
     except Exception as e: c.rollback(); flash('Responsibility update failed: '+str(e),'error')
     c.close(); return redirect(url_for('project_team',pid=pid))
